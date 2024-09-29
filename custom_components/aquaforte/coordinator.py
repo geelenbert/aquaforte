@@ -9,8 +9,8 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
-    IntegrationAquaforteApiClientAuthenticationError,
-    IntegrationAquaforteApiClientError,
+    AquaforteApiClientAuthenticationError,
+    AquaforteApiClientError,
 )
 from .const import DOMAIN, LOGGER
 
@@ -42,7 +42,7 @@ class AquaforteDataUpdateCoordinator(DataUpdateCoordinator):
         """Update data via library."""
         try:
             return await self.config_entry.runtime_data.client.async_get_data()
-        except IntegrationAquaforteApiClientAuthenticationError as exception:
+        except AquaforteApiClientAuthenticationError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
-        except IntegrationAquaforteApiClientError as exception:
+        except AquaforteApiClientError as exception:
             raise UpdateFailed(exception) from exception

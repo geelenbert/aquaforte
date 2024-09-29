@@ -1,81 +1,73 @@
-"""Adds config flow for Aquaforte."""
+"""Config flow for Aquaforte."""
 
 from __future__ import annotations
 
 import voluptuous as vol
 from homeassistant import config_entries, data_entry_flow
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import (
-    IntegrationAquaforteApiClient,
-    IntegrationAquaforteApiClientAuthenticationError,
-    IntegrationAquaforteApiClientCommunicationError,
-    IntegrationAquaforteApiClientError,
-)
+from .api import AquaforteApiClient, AquaforteApiClientError
 from .const import DOMAIN, LOGGER
-
 
 class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Aquaforte."""
-
     VERSION = 1
 
-    async def async_step_user(
-        self,
-        user_input: dict | None = None,
-    ) -> data_entry_flow.FlowResult:
-        """Handle a flow initialized by the user."""
-        _errors = {}
-        if user_input is not None:
-            try:
-                await self._test_credentials(
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                )
-            except IntegrationAquaforteApiClientAuthenticationError as exception:
-                LOGGER.warning(exception)
-                _errors["base"] = "auth"
-            except IntegrationAquaforteApiClientCommunicationError as exception:
-                LOGGER.error(exception)
-                _errors["base"] = "connection"
-            except IntegrationAquaforteApiClientError as exception:
-                LOGGER.exception(exception)
-                _errors["base"] = "unknown"
-            else:
-                return self.async_create_entry(
-                    title=user_input[CONF_USERNAME],
-                    data=user_input,
-                )
+    def __init__(self):
+        self._discovered_devices = []
 
+    async def async_step_user(self, user_input=None):
+        """Handle the initial step."""
+        errors = {}
+
+        if user_input is not None:
+            # Validate if IP is provided or start discovery
+            self._discovered_devices = await self._discover_devices(user_input.get("ip_address"))
+
+            if self._discovered_devices:
+                return await self.async_step_select_device()
+
+            errors["base"] = "no_devices_found"
+
+        # Display the form for IP address input
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_USERNAME,
-                        default=(user_input or {}).get(CONF_USERNAME, vol.UNDEFINED),
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        ),
-                    ),
-                    vol.Required(CONF_PASSWORD): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.PASSWORD,
-                        ),
-                    ),
-                },
+                    vol.Optional("ip_address"): str
+                }
             ),
-            errors=_errors,
+            errors=errors,
+            description_placeholders={"info": "Enter IP or leave blank to auto-discover"}
         )
 
-    async def _test_credentials(self, username: str, password: str) -> None:
-        """Validate credentials."""
-        client = IntegrationAquaforteApiClient(
-            username=username,
-            password=password,
-            session=async_create_clientsession(self.hass),
+    async def async_step_select_device(self, user_input=None):
+        """Step to select the discovered device."""
+        if user_input is not None:
+            device_id = user_input["device_id"]
+            device = next(dev for dev in self._discovered_devices if dev["device_id"] == device_id)
+            return self.async_create_entry(title=device_id, data=device)
+
+        return self.async_show_form(
+            step_id="select_device",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("device_id"): vol.In(
+                        {device["device_id"]: f"{device['device_id']} ({device['ip']})" for device in self._discovered_devices}
+                    )
+                }
+            )
         )
-        await client.async_get_data()
+
+    async def _discover_devices(self, ip_address=None):
+        """Perform the device discovery."""
+        LOGGER.debug("Starting discovery")
+        session = async_get_clientsession(self.hass)
+        client = AquaforteApiClient(session)
+
+        if ip_address:
+            devices = await client.async_discover_devices(target_ip=ip_address)
+        else:
+            devices = await client.async_discover_devices()
+
+        return devices

@@ -1,18 +1,22 @@
 {
     "config": {
-        "step": {
-            "user": {
-                "description": "If you need help with the configuration have a look here: https://github.com/geelenbert/aquaforte",
-                "data": {
-                    "username": "Username",
-                    "password": "Password"
-                }
-            }
+      "step": {
+        "user": {
+          "title": "AquaForte Setup",
+          "description": "Ensure the AquaForte water pump is connected to the same local network as Home Assistant. If no IP address is entered, the integration will attempt to detect the device automatically. If detection fails, please enter the IP address or hostname and try again.",
+          "data": {
+            "ip_address": "IP Address (optional)"
+          }
         },
-        "error": {
-            "auth": "Username/Password is wrong.",
-            "connection": "Unable to connect to the server.",
-            "unknown": "Unknown error occurred."
+        "select_device": {
+          "title": "Select AquaForte Device",
+          "description": "Please select the discovered AquaForte device from the list."
         }
+      },
+      "error": {
+        "no_devices": "No devices were found. Please enter the IP address and try again.",
+        "communication_error": "Failed to communicate with the device. Check the IP address and try again.",
+        "unknown_error": "An unknown error occurred. Please check the logs and try again."
+      }
     }
-}
+  }

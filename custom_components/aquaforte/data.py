@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.loader import Integration
 
-    from .api import IntegrationAquaforteApiClient
+    from .api import AquaforteApiClient
     from .coordinator import AquaforteDataUpdateCoordinator
 
 
@@ -20,6 +20,6 @@ type IntegrationAquaforteConfigEntry = ConfigEntry[IntegrationAquaforteData]
 class IntegrationAquaforteData:
     """Data for the Aquaforte integration."""
 
-    client: IntegrationAquaforteApiClient
+    client: AquaforteApiClient
     coordinator: AquaforteDataUpdateCoordinator
     integration: Integration
