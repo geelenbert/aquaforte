@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 """Custom types for Aquaforte."""
-=======
-"""Custom types for integration_blueprint."""
->>>>>>> 734b058 (Initial rebranding to Aquaforte)
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.loader import Integration
 
-<<<<<<< HEAD
     from .api import IntegrationAquaforteApiClient
     from .coordinator import AquaforteDataUpdateCoordinator
 
@@ -27,19 +22,4 @@ class IntegrationAquaforteData:
 
     client: IntegrationAquaforteApiClient
     coordinator: AquaforteDataUpdateCoordinator
-=======
-    from .api import IntegrationBlueprintApiClient
-    from .coordinator import BlueprintDataUpdateCoordinator
-
-
-type IntegrationBlueprintConfigEntry = ConfigEntry[IntegrationBlueprintData]
-
-
-@dataclass
-class IntegrationBlueprintData:
-    """Data for the Blueprint integration."""
-
-    client: IntegrationBlueprintApiClient
-    coordinator: BlueprintDataUpdateCoordinator
->>>>>>> 734b058 (Initial rebranding to Aquaforte)
     integration: Integration

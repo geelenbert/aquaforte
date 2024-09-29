@@ -1,9 +1,5 @@
 """
-<<<<<<< HEAD
-Custom integration to integrate Aquaforte pumps with Home Assistant.
-=======
 Custom integration to integrate Aquaforte with Home Assistant.
->>>>>>> 734b058 (Initial rebranding to Aquaforte)
 
 For more details about this integration, please refer to
 https://github.com/geelenbert/aquaforte

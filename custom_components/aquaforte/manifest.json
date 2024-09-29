@@ -1,13 +1,7 @@
 {
   "domain": "aquaforte",
   "name": "Aquaforte",
-  "codeowners": [
-<<<<<<< HEAD
-    "@geelenbert"
-=======
-    "@ludeeus"
->>>>>>> 734b058 (Initial rebranding to Aquaforte)
-  ],
+  "codeowners": ["@geelenbert"],
   "config_flow": true,
   "documentation": "https://github.com/geelenbert/aquaforte",
   "iot_class": "cloud_polling",
