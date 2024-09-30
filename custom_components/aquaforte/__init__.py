@@ -8,48 +8,23 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AquaforteApiClient
 from .const import DOMAIN, LOGGER
 
-PLATFORMS = ["switch", "sensor", "number", "binary_sensor"]
+PLATFORMS = ["binary_sensor", "number", "select", "switch"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Aquaforte integration from YAML or config entries."""
     LOGGER.debug("Aquaforte: async_setup called")
-    session = async_get_clientsession(hass)
-    client = AquaforteApiClient(session)
-
-    # Start auto-discovery at startup
-    hass.async_create_task(async_discover_devices(hass, client))
-
     return True
 
 
-# async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-#     """Set up Aquaforte from a config entry."""
-#     LOGGER.debug("Aquaforte: async_setup_entry called")
-#     hass.data.setdefault(DOMAIN, {})
-
-#     session = async_get_clientsession(hass)
-#     client = AquaforteApiClient(session)
-
-#     # Store client and device ID in hass.data
-#     hass.data[DOMAIN][entry.entry_id] = {"client": client, "device_id": entry.data["device_id"]}
-
-#     # Start device discovery
-#     hass.async_create_task(async_discover_devices(hass, client))
-
-#     # Forward setup to supported platforms
-#     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
-#     return True
-
-
-async def async_setup_entry(hass, config_entry):
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Set up AquaForte integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     client = AquaforteApiClient(async_get_clientsession(hass))
     await client.async_connect_device(config_entry.data["ip"])
 
-    # Store client for future use
+    # Store client for this entry
     hass.data[DOMAIN][config_entry.entry_id] = {
         "client": client,
     }
@@ -65,30 +40,17 @@ async def async_setup_entry(hass, config_entry):
         sw_version=config_entry.data.get("firmware_version"),
     )
 
-    # Forward setup to the switch platform
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setup(config_entry, "switch")
-    )
+    # Forward setup to the platforms
+    await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
     return True
 
 
-async def async_discover_devices(hass: HomeAssistant, client: AquaforteApiClient):
-    """Discover Aquaforte devices and prompt the config flow."""
-    discovered_devices = await client.async_discover_devices()
+async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Unload an AquaForte config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(config_entry, PLATFORMS)
 
-    if discovered_devices:
-        for device in discovered_devices:
-            unique_id = device["device_id"]
-            existing_entry = await hass.config_entries.async_entries(DOMAIN)
+    if unload_ok:
+        hass.data[DOMAIN].pop(config_entry.entry_id)
 
-            if not any(entry.unique_id == unique_id for entry in existing_entry):
-                # Create a new config flow entry for each discovered device
-                hass.config_entries.flow.async_init(
-                    DOMAIN,
-                    context={"source": "discovery"},
-                    data=device
-                )
-                LOGGER.info(f"Discovered Aquaforte device: {device}")
-    else:
-        LOGGER.info("No Aquaforte devices discovered")
+    return unload_ok

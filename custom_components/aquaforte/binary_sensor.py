@@ -1,61 +1,45 @@
 """Binary sensor platform for Aquaforte."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
-from homeassistant.components.binary_sensor import (
-    BinarySensorDeviceClass,
-    BinarySensorEntity,
-    BinarySensorEntityDescription,
-)
-
-from .entity import IntegrationAquaforteEntity
-
-if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-    from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-    from .coordinator import AquaforteDataUpdateCoordinator
-    from .data import IntegrationAquaforteConfigEntry
-
-ENTITY_DESCRIPTIONS = (
-    BinarySensorEntityDescription(
-        key="aquaforte",
-        name="Integration aquaforte Binary Sensor",
-        device_class=BinarySensorDeviceClass.CONNECTIVITY,
-    ),
-)
+from homeassistant.components.binary_sensor import BinarySensorEntity
+from .const import DOMAIN
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001 Unused function argument: `hass`
-    entry: IntegrationAquaforteConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up the binary_sensor platform."""
-    async_add_entities(
-        IntegrationAquaforteBinarySensor(
-            coordinator=entry.runtime_data.coordinator,
-            entity_description=entity_description,
-        )
-        for entity_description in ENTITY_DESCRIPTIONS
-    )
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Aquaforte binary sensor entities from a config entry."""
+    client = hass.data[DOMAIN][entry.entry_id]["client"]
+
+    async_add_entities([
+        AquaforteBinarySensor(client, entry, "Fault Overcurrent", "fault_overcurrent"),
+        AquaforteBinarySensor(client, entry, "Fault Overvoltage", "fault_overvoltage"),
+        AquaforteBinarySensor(client, entry, "High Temperature", "fault_high_temp"),
+        AquaforteBinarySensor(client, entry, "Fault Undervoltage", "fault_undervoltage"),
+        AquaforteBinarySensor(client, entry, "Fault Locked Rotor", "fault_locked_rotor"),
+        AquaforteBinarySensor(client, entry, "No Load", "fault_no_load"),
+        AquaforteBinarySensor(client, entry, "Serial Port Connection Fault", "fault_uart"),
+    ])
 
 
-class IntegrationAquaforteBinarySensor(IntegrationAquaforteEntity, BinarySensorEntity):
-    """aquaforte binary_sensor class."""
+class AquaforteBinarySensor(BinarySensorEntity):
+    """Representation of an Aquaforte binary sensor."""
 
-    def __init__(
-        self,
-        coordinator: AquaforteDataUpdateCoordinator,
-        entity_description: BinarySensorEntityDescription,
-    ) -> None:
-        """Initialize the binary_sensor class."""
-        super().__init__(coordinator)
-        self.entity_description = entity_description
+    def __init__(self, client, entry, name, sensor_key):
+        """Initialize the binary sensor."""
+        self._client = client
+        self._attr_name = name
+        self._sensor_key = sensor_key
+        self._attr_is_on = False
+
+    @property
+    def unique_id(self) -> str:
+        """Return the unique ID for this entity."""
+        return f"{self._client.device_id}_{self.entity_description.key}"
 
     @property
     def is_on(self) -> bool:
-        """Return true if the binary_sensor is on."""
-        return self.coordinator.data.get("title", "") == "foo"
+        """Return the state of the sensor."""
+        return self._attr_is_on
+
+    async def async_update(self):
+        """Update the sensor state."""
+        self._attr_is_on = await self._client.async_get_fault(self._sensor_key)
+        self.async_write_ha_state()

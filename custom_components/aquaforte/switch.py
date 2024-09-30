@@ -1,67 +1,63 @@
 """Switch platform for Aquaforte."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Any
-
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
+from homeassistant.helpers.entity import DeviceInfo
 
-from .entity import IntegrationAquaforteEntity
-
-if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
-    from homeassistant.helpers.entity_platform import AddEntitiesCallback
-
-    from .coordinator import AquaforteDataUpdateCoordinator
-    from .data import IntegrationAquaforteConfigEntry
-
-ENTITY_DESCRIPTIONS = (
-    SwitchEntityDescription(
-        key="aquaforte",
-        name="Integration Switch",
-        icon="mdi:format-quote-close",
-    ),
-)
+from .const import DOMAIN
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001 Unused function argument: `hass`
-    entry: IntegrationAquaforteConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up the switch platform."""
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up Aquaforte switch entities from a config entry."""
+    client = hass.data[DOMAIN][entry.entry_id]["client"]
+
     async_add_entities(
-        IntegrationAquaforteSwitch(
-            coordinator=entry.runtime_data.coordinator,
-            entity_description=entity_description,
-        )
-        for entity_description in ENTITY_DESCRIPTIONS
+        [
+            AquaforteSwitch(client, entry, SwitchEntityDescription(key="power", name="Power Switch")),
+            AquaforteSwitch(client, entry, SwitchEntityDescription(key="pause", name="Pause Switch")),
+        ]
     )
 
 
-class IntegrationAquaforteSwitch(IntegrationAquaforteEntity, SwitchEntity):
-    """Aquaforte switch class."""
+class AquaforteSwitch(SwitchEntity):
+    """Representation of an Aquaforte switch."""
 
-    def __init__(
-        self,
-        coordinator: AquaforteDataUpdateCoordinator,
-        entity_description: SwitchEntityDescription,
-    ) -> None:
-        """Initialize the switch class."""
-        super().__init__(coordinator)
+    def __init__(self, client, entry, entity_description):
+        """Initialize the switch."""
+        self._client = client
+        self._attr_name = f"AquaForte {entity_description.name}"
         self.entity_description = entity_description
+        self._is_on = False
+        self._entry = entry
+
+    @property
+    def unique_id(self) -> str:
+        """Return the unique ID for this entity."""
+        return f"{self._client.device_id}_{self.entity_description.key}"
 
     @property
     def is_on(self) -> bool:
-        """Return true if the switch is on."""
-        return self.coordinator.data.get("title", "") == "foo"
+        """Return the switch state."""
+        return self._is_on
 
-    async def async_turn_on(self, **_: Any) -> None:
-        """Turn on the switch."""
-        await self.coordinator.config_entry.runtime_data.client.async_set_title("bar")
-        await self.coordinator.async_request_refresh()
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information to tie this entity to a device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry.data["device_id"])},
+            name=f"AquaForte {self._entry.data['device_id']}",
+            manufacturer="AquaForte",
+            model="Water Pump",
+            sw_version=self._entry.data.get("firmware_version"),
+        )
 
-    async def async_turn_off(self, **_: Any) -> None:
-        """Turn off the switch."""
-        await self.coordinator.config_entry.runtime_data.client.async_set_title("foo")
-        await self.coordinator.async_request_refresh()
+    async def async_turn_on(self, **kwargs):
+        """Turn the switch on."""
+        await self._client.async_turn_on(self.entity_description.key)
+        self._is_on = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs):
+        """Turn the switch off."""
+        await self._client.async_turn_off(self.entity_description.key)
+        self._is_on = False
+        self.async_write_ha_state()
