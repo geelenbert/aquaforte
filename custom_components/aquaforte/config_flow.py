@@ -6,7 +6,7 @@ import voluptuous as vol
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import AquaforteApiClient, AquaforteApiClientError
+from .api import AquaforteDiscoveryClient, AquaforteApiClient
 from .const import DOMAIN, LOGGER
 
 class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -47,6 +47,10 @@ class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             device_id = user_input["device_id"]
             device = next(dev for dev in self._discovered_devices if dev["device_id"] == device_id)
             return self.async_create_entry(title=device_id, data=device)
+        #     return self.async_create_entry(
+        #         title=device_info["device_id"],
+        #         data=device_info
+        # )
 
         return self.async_show_form(
             step_id="select_device",
@@ -63,7 +67,7 @@ class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Perform the device discovery."""
         LOGGER.debug("Starting discovery")
         session = async_get_clientsession(self.hass)
-        client = AquaforteApiClient(session)
+        client = AquaforteDiscoveryClient(session)
 
         if ip_address:
             devices = await client.async_discover_devices(target_ip=ip_address)

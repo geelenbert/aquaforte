@@ -21,8 +21,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     """Set up AquaForte integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    client = AquaforteApiClient(async_get_clientsession(hass))
-    await client.async_connect_device(config_entry.data["ip"])
+    client = AquaforteApiClient(discovery_data = config_entry.data)
+    await client.async_connect_device()
+
+    # Store the device_id:
+    client._device_id =  config_entry.data["device_id"]
 
     # Store client for this entry
     hass.data[DOMAIN][config_entry.entry_id] = {

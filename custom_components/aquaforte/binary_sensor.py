@@ -28,11 +28,12 @@ class AquaforteBinarySensor(BinarySensorEntity):
         self._attr_name = name
         self._sensor_key = sensor_key
         self._attr_is_on = False
+        self._attr_unique_id = f"{self._client._device_id}_{self._sensor_key}"
 
     @property
     def unique_id(self) -> str:
         """Return the unique ID for this entity."""
-        return f"{self._client.device_id}_{self.entity_description.key}"
+        return self._attr_unique_id
 
     @property
     def is_on(self) -> bool:

@@ -28,11 +28,12 @@ class AquaforteSwitch(SwitchEntity):
         self.entity_description = entity_description
         self._is_on = False
         self._entry = entry
+        self._attr_unique_id = f"{self._client._device_id}_{self.entity_description.key}"
 
     @property
     def unique_id(self) -> str:
         """Return the unique ID for this entity."""
-        return f"{self._client.device_id}_{self.entity_description.key}"
+        return self._attr_unique_id
 
     @property
     def is_on(self) -> bool:

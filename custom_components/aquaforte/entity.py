@@ -14,10 +14,10 @@ class AquaforteEntity(Entity):
         """Initialize the base entity."""
         self._client = client
         self.entity_description = description
-        self._attr_name = f"Aquaforte {self._client.device_id} {description.name}" if description else f"Aquaforte {self._client.device_id}"
+        self._attr_name = f"Aquaforte {self._client._device_id} {description.name}" if description else f"Aquaforte {self._client._device_id}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._client.device_id)},
-            name=f"Aquaforte {self._client.device_id}",
+            identifiers={(DOMAIN, self._client._device_id)},
+            name=f"Aquaforte {self._client._device_id}",
             manufacturer="Aquaforte",
             model="Water Pump",
             sw_version=self._client.firmware_version
@@ -27,8 +27,8 @@ class AquaforteEntity(Entity):
     def unique_id(self) -> str:
         """Return the unique ID for this entity."""
         if self.entity_description:
-            return f"{self._client.device_id}_{self.entity_description.key}"
-        return self._client.device_id
+            return f"{self._client._device_id}_{self.entity_description.key}"
+        return self._client._device_id
 
     @property
     def device_info(self) -> DeviceInfo:

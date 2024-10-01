@@ -23,11 +23,12 @@ class AquaforteSelect(SelectEntity):
         self._select_key = select_key
         self._attr_options = options
         self._attr_current_option = options[0]
+        self._attr_unique_id = f"{self._client._device_id}_{self._select_key}"
 
     @property
     def unique_id(self) -> str:
         """Return the unique ID for this entity."""
-        return f"{self._client.device_id}_{self.entity_description.key}"
+        return self._attr_unique_id
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
