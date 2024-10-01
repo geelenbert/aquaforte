@@ -137,9 +137,15 @@ class AquaforteApiClient:
 
     def __init__(self, discovery_data: dict) -> None:
         """Initialize the API client with device information."""
-        self._discovery_data = discovery_data
-        self._device_id = discovery_data.get('device_id')
         self._ip_address = discovery_data.get('ip')
+        self._device_id = discovery_data.get('device_id')
+        self._mac = discovery_data.get('mac')
+        self._wifi_version = discovery_data.get('wifi_version')
+        self._product_key = discovery_data.get('product_key')
+        self._mcu_attributes = discovery_data.get('mcu_attributes')
+        self._api_server = discovery_data.get('api_server')
+        self._firmware_version = discovery_data.get('firmware_version')
+
         self._reader = None
         self._writer = None
         self._connected = False
