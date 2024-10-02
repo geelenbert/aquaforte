@@ -161,11 +161,10 @@ class AquaforteApiClient:
         self._firmware_version = discovery_data.get('firmware_version')
 
         self._passcode = None
-
         self._reader = None
         self._writer = None
         self._connected = False
-        self._logged_in = False
+        self._authenticated = False
         self._ping_task = None
         self._listener_task = None
         self._reconnect_task = None
@@ -178,6 +177,7 @@ class AquaforteApiClient:
         self._packet_handlers = {
             PacketType.PING_PONG_RESPONSE: self._handle_ping_response,
             PacketType.DATA_TRANSMIT_RESPONSE: self._handle_data_transmit_response,
+            PacketType.DATA_CONTROL_REQUEST: self._handle_data_control_request,
             PacketType.DATA_CONTROL_RESPONSE: self._handle_data_control_response,
             PacketType.PASSCODE_RESPONSE: self._handle_passcode_response,
             PacketType.LOGIN_RESPONSE: self._handle_login_response,
@@ -186,119 +186,149 @@ class AquaforteApiClient:
         _LOGGER.debug(f"AquaforteApiClient initialized for device: {self._device_id}")
 
     async def async_connect_device(self) -> bool:
-        """Initial connection to the device."""
-        if await self._connect_and_authenticate():
+        """Attempt to connect to the device."""
+        try:
+            # Step 1: Connect
+            await self._connect()
+
+            # Step 2: Start the listener
+            self._listener_task = asyncio.create_task(self._listen())
+
+            # Step 3: Authenticate (retrieve passcode and login)
+            await self._authenticate()
+
+            # Step 4: Start ping task if authentication successful
+            self._ping_task = asyncio.create_task(self._ping_task_loop())
+
             return True
-        else:
-            # Handle failed initial connection
+        except (asyncio.TimeoutError, OSError, AquaforteApiClientAuthenticationError) as e:
+            _LOGGER.error(f"Error connecting to device ({self._ip_address}): {e}")
+            # Start reconnect attempts if connection fails
             if not self._reconnect_task:
                 self._reconnect_task = asyncio.create_task(self._reconnect_loop())
             return False
 
-    async def _connect_and_authenticate(self) -> bool:
-        """Handle the full connection and authentication process."""
-        _LOGGER.debug(f"Attempting full connection process for {self._ip_address}...")
-
+    async def _connect(self) -> None:
+        """Handle the connection process to the device."""
+        _LOGGER.info(f"Connecting to AquaForte device at {self._ip_address}...")
         try:
-            # Open connection
             self._reader, self._writer = await asyncio.open_connection(self._ip_address, AQUAFORTE_TCP_PORT)
             self._connected = True
             _LOGGER.info(f"Connected to AquaForte device at {self._ip_address}")
+        except Exception as e:
+            self._connected = False
+            raise e
 
-            # Start listener task
-            self._listener_task = asyncio.create_task(self._listen())
+    async def _authenticate(self) -> None:
+        """Authenticate with the device (retrieve passcode and login)."""
+        try:
+            # Step 1: Retrieve passcode
+            await self.get_passcode()
 
-            # Retrieve passcode if necessary
-            if self._passcode is None:
-                await self.get_passcode()
-
-            # Perform login
+            # Step 2: Perform login
             await self.login()
 
-            # Start ping task if login is successful
-            if not self._ping_task or self._ping_task.cancelled():
-                self._ping_task = asyncio.create_task(self._ping_task_loop())
-
-            return True
-
-        except (asyncio.TimeoutError, OSError, AquaforteApiClientAuthenticationError) as e:
-            _LOGGER.error(f"Error during connection process ({self._ip_address}): {e}")
-            await self.async_disconnect()  # Ensure we disconnect in case of error
-            return False
-
+            self._authenticated = True
+            _LOGGER.info(f"Authentication successful for {self._ip_address}")
+        except AquaforteApiClientAuthenticationError as e:
+            self._authenticated = False
+            _LOGGER.error(f"Authentication failed for {self._ip_address}: {e}")
+            raise e
 
     async def async_disconnect(self) -> None:
         """Disconnect from the AquaForte device."""
+        _LOGGER.debug(f"Disconnecting from AquaForte device ({self._ip_address})...")
+
+        # Ensure all tasks are canceled cleanly
+        if self._ping_task:
+            _LOGGER.debug(f"Cancelling ping task ({self._ip_address})...")
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                _LOGGER.debug(f"Ping task cancelled ({self._ip_address}).")
+
+        if self._listener_task:
+            _LOGGER.debug(f"Cancelling listener task ({self._ip_address})...")
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                _LOGGER.debug(f"Listener task cancelled ({self._ip_address}).")
+
+        # Close connection if writer exists
         if self._writer:
-            _LOGGER.debug(f"Disconnecting from AquaForte device ({self._ip_address})...")
+            _LOGGER.debug(f"Closing writer for device ({self._ip_address})...")
             self._writer.close()
             await self._writer.wait_closed()
-            self._connected = False
-            _LOGGER.info(f"Disconnected from AquaForte device ({self._ip_address})")
 
-            # Cancel ongoing tasks
-            if self._ping_task:
-                self._ping_task.cancel()
-            if self._listener_task:
-                self._listener_task.cancel()
+        self._connected = False
+        _LOGGER.info(f"Disconnected from AquaForte device ({self._ip_address})")
 
-            # Start reconnect attempts
-            if not self._reconnect_task:
-                self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+        # Trigger reconnect after cleaning up
+        if not self._reconnect_task:
+            _LOGGER.info(f"Starting reconnect process for device ({self._ip_address})...")
+            self._reconnect_task = asyncio.create_task(self._reconnect_loop())
+
 
     async def _reconnect_loop(self) -> None:
-        """Attempt to reconnect to the AquaForte device if disconnected."""
-        _LOGGER.info(f"Starting reconnect loop for {self._ip_address}...")
+        """Reconnect to the device after disconnection."""
+        _LOGGER.info(f"Starting reconnect loop for device ({self._ip_address})...")
         while not self._connected:
             try:
-                _LOGGER.info(f"Reconnecting to AquaForte device at {self._ip_address}...")
-                await asyncio.sleep(RECONNECT_DELAY)
-
-                if await self._connect_and_authenticate():
-                    _LOGGER.info(f"Successfully reconnected to AquaForte device at {self._ip_address}")
-                    return  # Exit loop once reconnection is successful
-
+                _LOGGER.info(f"Attempting to reconnect to device ({self._ip_address})...")
+                await asyncio.sleep(RECONNECT_DELAY)  # Sleep before attempting reconnection
+                if await self.async_connect_device():
+                    _LOGGER.info(f"Successfully reconnected to device ({self._ip_address})")
+                    return  # Exit the loop once reconnected
             except Exception as e:
-                _LOGGER.error(f"Reconnection attempt failed ({self._ip_address}): {e}")
-
+                _LOGGER.error(f"Reconnection attempt failed for device ({self._ip_address}): {e}")
+            # Sleep again before the next retry
             await asyncio.sleep(RECONNECT_DELAY)
 
+    # Ping task loop
     async def _ping_task_loop(self) -> None:
         """Ping the device every PING_INTERVAL seconds."""
-        while self._connected:
-            try:
+        try:
+            while self._connected:
                 await asyncio.sleep(PING_INTERVAL)
                 _LOGGER.debug(f"Sending ping ({self._ip_address})...")
                 message = self.build_message(PacketType.PING_PONG_REQUEST)
-                if not await self.transmit_and_wait_for_response(message, PacketType.PING_PONG_RESPONSE):
+
+                # Wait for ping response, but don't disconnect immediately if it times out
+                if not await self.transmit_and_wait_for_response(message, PacketType.PING_PONG_RESPONSE, is_ping=True):
                     self._missed_ping_count += 1
                     _LOGGER.error(f"Ping response timeout ({self._ip_address}). Missed ping count: {self._missed_ping_count}")
 
+                    # Only disconnect if missed ping count exceeds the allowed number
                     if self._missed_ping_count > self._allowed_missed_pings:
                         _LOGGER.error(f"Exceeded allowed missed ping responses. Disconnecting ({self._ip_address})...")
                         await self.async_disconnect()
-                        break  # Exit loop to stop the task
+                        break  # Stop the ping task loop
                 else:
-                    self._missed_ping_count = 0
-            except asyncio.CancelledError:
-                _LOGGER.debug(f"Ping task cancelled ({self._ip_address}).")
-                break
+                    self._missed_ping_count = 0  # Reset the counter on successful ping
+        except asyncio.CancelledError:
+            _LOGGER.debug(f"Ping task cancelled ({self._ip_address}).")
+        except Exception as e:
+            _LOGGER.error(f"Error in ping task ({self._ip_address}): {e}")
 
     async def _listen(self) -> None:
         """Continuously listen for incoming data from the device."""
         _LOGGER.debug(f"Starting listener task ({self._ip_address})...")
-        while self._connected:
-            try:
+        try:
+            while self._connected:
                 data = await self._reader.read(1024)
                 if not data:
-                    raise ConnectionError(f"No data received ({self._ip_address}). Connection might be closed.")
+                    raise ConnectionError(f"No data received ({self._ip_address}). Connection might be closed by the remote host.")
+
                 await self._handle_data(data)
-            except (asyncio.CancelledError, ConnectionError):
-                _LOGGER.warning(f"Listener task terminated or connection lost ({self._ip_address}).")
-                await self.async_disconnect()
-                break
-            except Exception as e:
-                _LOGGER.error(f"Error while listening for data ({self._ip_address}): {e}")
+        except (asyncio.CancelledError, ConnectionError) as e:
+            _LOGGER.warning(f"Listener task terminated or connection lost ({self._ip_address}): {e}")
+            await self.async_disconnect()  # Clean up on disconnection
+        except Exception as e:
+            _LOGGER.error(f"Error while listening for data ({self._ip_address}): {e}")
+        finally:
+            _LOGGER.debug(f"Listener task finished for ({self._ip_address})")
 
     async def _handle_data(self, message: bytes) -> None:
         """Decode and handle incoming data packets."""
@@ -329,10 +359,12 @@ class AquaforteApiClient:
         except Exception as err:
             _LOGGER.error(f"Error processing data packet ({self._ip_address}): {err}")
 
-    async def transmit_and_wait_for_response(self, message, expected_response_type: PacketType, timeout=None) -> bool:
+    async def transmit_and_wait_for_response(self, message, expected_response_type: PacketType, is_ping=False) -> bool:
         """Send a message and wait for a specific response type."""
-        if timeout is None:
-            timeout = RESPONSE_TIMEOUT
+        if is_ping:
+            timeout = PING_INTERVAL  # Use the ping interval for timeouts
+        else:
+            timeout = RESPONSE_TIMEOUT  # Default response timeout
 
         event = asyncio.Event()
         self._expected_response_events[expected_response_type] = event
@@ -343,8 +375,7 @@ class AquaforteApiClient:
         try:
             await asyncio.wait_for(event.wait(), timeout)
         except asyncio.TimeoutError:
-            _LOGGER.error(f"Timeout waiting for response ({self._ip_address}): {expected_response_type}")
-            await self.async_disconnect()  # Disconnect on timeout
+            _LOGGER.error(f"Timeout waiting for {'ping ' if is_ping else ''}response ({self._ip_address}): {expected_response_type}")
             return False
         return True
 
@@ -359,16 +390,17 @@ class AquaforteApiClient:
 
         return prefix + length_bytes + flag + command_bytes + data
 
+    # Authentication Steps
     async def get_passcode(self) -> bool:
         """Send the get passcode request to the device."""
         _LOGGER.debug(f"Sending passcode request ({self._ip_address})...")
         message = self.build_message(PacketType.PASSCODE_REQUEST)
         if not await self.transmit_and_wait_for_response(message, PacketType.PASSCODE_RESPONSE):
             _LOGGER.error(f"Retrieving passcode failed ({self._ip_address}).")
-            return False
-        _LOGGER.info(f"Retrieved passcode ({self._ip_address}).")
-        return True
+            raise AquaforteApiClientAuthenticationError(f"Failed to retrieve passcode from {self._ip_address}")
 
+        _LOGGER.info(f"Passcode retrieved successfully from {self._ip_address}.")
+        return True
 
     async def login(self) -> bool:
         """Send the login request to the device."""
@@ -378,24 +410,38 @@ class AquaforteApiClient:
         data = length_bytes + bytes(self._passcode, 'utf-8')
         message = self.build_message(PacketType.LOGIN_REQUEST, data=data)
 
-        # Wait for the login response or timeout
         if not await self.transmit_and_wait_for_response(message, PacketType.LOGIN_RESPONSE):
             _LOGGER.error(f"Login failed ({self._ip_address}).")
-            raise AquaforteApiClientAuthenticationError(f"Login failed ({self._ip_address}).")  # Raise an error to handle it in connect
-        return True
+            raise AquaforteApiClientAuthenticationError(f"Login failed for device {self._ip_address}")
 
+        _LOGGER.info(f"Login successful for {self._ip_address}")
+        return True
 
     # Handler functions for specific packet types
     async def _handle_ping_response(self, data: Optional[bytes]):
+        """Handle ping response packets."""
         _LOGGER.debug(f"Received ping response ({self._ip_address}).")
         if PacketType.PING_PONG_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.PING_PONG_RESPONSE].set()
 
     async def _handle_data_transmit_response(self, data: Optional[bytes]):
+        """Handle data transmission response packets."""
         _LOGGER.info(f"Data Transmit Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        if PacketType.DATA_TRANSMIT_RESPONSE in self._expected_response_events:
+            self._expected_response_events[PacketType.DATA_TRANSMIT_RESPONSE].set()
 
     async def _handle_data_control_response(self, data: Optional[bytes]):
+        """Handle data control response packets."""
         _LOGGER.info(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
+            self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
+
+    async def _handle_data_control_request(self, data: Optional[bytes]):
+        """Handle data control request packets."""
+        # This packet type is initiated from the device, wehn something has changed
+        _LOGGER.info(f"Data Control Request received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
+            self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
 
     async def _handle_login_response(self, data: Optional[bytes]):
         """Handle the login response and check if login was successful."""
@@ -407,24 +453,25 @@ class AquaforteApiClient:
         login_status = data[-1]
 
         if login_status == 0x00:
-            self._logged_in = True
-            _LOGGER.info("Login successful.")
+            self._authenticated = True
+            _LOGGER.info(f"Login successful for device {self._ip_address}.")
             if PacketType.LOGIN_RESPONSE in self._expected_response_events:
                 self._expected_response_events[PacketType.LOGIN_RESPONSE].set()
         else:
-            self._logged_in = False
-            _LOGGER.error("Login failed ({self._ip_address}).")
+            self._authenticated = False
+            _LOGGER.error(f"Login failed for device {self._ip_address}.")
             if PacketType.LOGIN_RESPONSE in self._expected_response_events:
                 self._expected_response_events[PacketType.LOGIN_RESPONSE].set()
-            raise AquaforteApiClientAuthenticationError(f"Login failed ({self._ip_address}).")
+            raise AquaforteApiClientAuthenticationError(f"Login failed for device {self._ip_address}.")
 
     async def _handle_passcode_response(self, data: Optional[bytes]):
+        """Handle passcode response packets."""
         _LOGGER.info(f"Passcode Response received ({self._ip_address}).")
 
         try:
             # Ensure data is not None or empty
             if data is None or len(data) < 2:
-                raise AquaforteApiClientAuthenticationError("Invalid passcode response: No data or insufficient length.")
+                raise AquaforteApiClientAuthenticationError(f"Invalid passcode response: No data or insufficient length ({self._ip_address}).")
 
             offset = 0
             # Read the passcode length
@@ -432,27 +479,28 @@ class AquaforteApiClient:
 
             # Ensure passcode length is valid
             if pass_len < 1:
-                raise AquaforteApiClientAuthenticationError("Invalid passcode response: Passcode length is less than 1.")
+                raise AquaforteApiClientAuthenticationError(f"Invalid passcode response: Passcode length is less than 1 ({self._ip_address}).")
 
             # Extract the passcode
             self._passcode = data[offset: offset + pass_len].decode("utf-8")
 
             # Log the received passcode
-            _LOGGER.debug(f"Received passcode: {self._passcode}")
+            _LOGGER.debug(f"Received passcode: {self._passcode} for device {self._ip_address}")
 
             # Set the response event if it's expected
             if PacketType.PASSCODE_RESPONSE in self._expected_response_events:
                 self._expected_response_events[PacketType.PASSCODE_RESPONSE].set()
 
         except (UnicodeDecodeError, struct.error) as e:
-            _LOGGER.error(f"Error decoding passcode ({self._ip_address}): {e}")
-            raise AquaforteApiClientAuthenticationError(f"Invalid passcode format ({self._ip_address}): {e}")
+            _LOGGER.error(f"Error decoding passcode for device {self._ip_address}: {e}")
+            raise AquaforteApiClientAuthenticationError(f"Invalid passcode format for device {self._ip_address}: {e}")
 
         except AquaforteApiClientAuthenticationError as auth_error:
             _LOGGER.error(auth_error)
             raise auth_error
 
     async def _handle_wifi_info_response(self, data: Optional[bytes]):
+        """Handle WiFi information response packets."""
         _LOGGER.info(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
 
 
