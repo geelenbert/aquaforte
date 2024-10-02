@@ -8,8 +8,13 @@ import asyncio
 import logging
 from typing import Any, Optional
 from enum import Enum
+from pathlib import Path
 
+import requests
+import aiofiles
 import aiohttp
+import json
+import os
 
 AQUAFORTE_UDP_PORT = 12414
 AQUAFORTE_TCP_PORT = 12416
@@ -17,6 +22,8 @@ DISCOVERY_TIMEOUT = 5  # Timeout for device discovery
 PING_INTERVAL = 5  # Interval to send ping messages
 RESPONSE_TIMEOUT = 5  # Timeout waiting for response
 RECONNECT_DELAY = 10  # Delay before attempting to reconnect
+
+AQUAFORTE_MODELS_API_URL = "http://site.gizwits.com/v2/datapoint"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +54,127 @@ class PacketType(Enum):
     DATA_TRANSMIT_RESPONSE = 0x91
     DATA_CONTROL_REQUEST = 0x93
     DATA_CONTROL_RESPONSE = 0x94
+
+
+import os
+import requests
+import json
+
+class DeviceDataMap:
+    """Class to represent the data structure and manage updates from the AquaForte device."""
+
+    def __init__(self, name, packet_version, protocol_type, product_key, endpoints):
+        self.name = name
+        self.packet_version = packet_version
+        self.protocol_type = protocol_type
+        self.product_key = product_key
+        self.endpoints = endpoints
+
+    @property
+    def endpoint_size(self):
+        """Calculate the total size of all endpoints in bytes."""
+        max_offset = 0
+        for endpoint in self.endpoints.values():
+            if 'byte_offset' in endpoint and 'length' in endpoint and 'unit' in endpoint:
+                if endpoint['unit'] == 'byte':
+                    end_offset = endpoint['byte_offset'] + endpoint['length']
+                elif endpoint['unit'] == 'bit':
+                    end_offset = endpoint['byte_offset'] + 1
+                else:
+                    raise ValueError(f"Endpoint unit type undefined: {endpoint['unit']} ")
+
+                if end_offset > max_offset:
+                    max_offset = end_offset
+        return max_offset
+
+    @classmethod
+    async def load_device_data(cls, product_key):
+        """Simplified device data loader: tries local first, then cloud."""
+        if not product_key:
+            _LOGGER.error("Product Key is empty. Cannot load device data.")
+            return None
+
+        # Get the current directory where api.py is located
+        base_path = os.path.dirname(__file__)
+
+        # Construct the file path for the local JSON in the 'models' directory relative to api.py
+        models_path = os.path.join(base_path, 'modelsAAA', f"{product_key}.json")
+
+        # Try to load from local file first
+        if os.path.exists(models_path):
+            _LOGGER.info(f"Loading device data from local file: {models_path}")
+            try:
+                async with aiofiles.open(models_path, 'r') as file:
+                    data = await file.read()
+                    json_data = json.loads(data)
+                return cls.load_format_from_dict(json_data)
+            except Exception as e:
+                _LOGGER.error(f"Error loading JSON from file: {e}")
+                return None
+        else:
+            # If local file not found, attempt to fetch from the cloud
+            _LOGGER.warning(f"Local file not found: {models_path}. Trying to fetch from cloud.")
+            remote_url = f"{AQUAFORTE_MODELS_API_URL}?product_key={product_key}"
+            _LOGGER.warning(f"Fetching remote configuration for {product_key} from: {remote_url}")
+
+            # Use aiohttp for asynchronous non-blocking requests
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+                try:
+                    async with session.get(remote_url) as response:
+                        if response.status == 200:
+                            _LOGGER.info(f"Remote configuration fetched for product key: {product_key}")
+                            remote_data = await response.json()
+                            return cls.load_format_from_dict(remote_data)
+                        else:
+                            _LOGGER.error(f"Failed to fetch remote JSON. Status code: {response.status}")
+                except aiohttp.ClientError as e:
+                    _LOGGER.error(f"Error fetching remote JSON: {e}")
+                except asyncio.TimeoutError:
+                    _LOGGER.error(f"Timeout occurred when fetching remote JSON for {product_key}")
+
+        return None
+
+    @classmethod
+    def load_format_from_dict(cls, data):
+        """Load device format from a dictionary."""
+        _LOGGER.debug(f"Loading device data from dictionary for product key: {data.get('product_key')}")
+        name = data['name']
+        packet_version = data['packetVersion']
+        protocol_type = data['protocolType']
+        product_key = data['product_key']
+        endpoints = {}
+
+        for entity in data['entities']:
+            for attr in entity['attrs']:
+                endpoint_name = attr['name']
+                endpoint_data = {
+                    'display_name': attr['display_name'],
+                    'data_type': attr['data_type'],
+                    'byte_offset': attr['position']['byte_offset'],
+                    'unit': attr['position']['unit'],
+                    'length': attr['position']['len'],
+                    'bit_offset': attr['position'].get('bit_offset', 0),
+                    'type': attr['type'],
+                    'id': attr['id'],
+                    'desc': attr['desc']
+                }
+                if 'enum' in attr:
+                    endpoint_data['enum'] = attr['enum']
+
+                # Initialize value field based on data type
+                if attr['data_type'] == 'bool':
+                    endpoint_data['value'] = None
+                elif attr['data_type'] == 'uint8':
+                    endpoint_data['value'] = None
+                elif attr['data_type'] == 'binary':
+                    endpoint_data['value'] = bytearray(attr['position']['len'])
+                elif attr['data_type'] == 'enum':
+                    endpoint_data['value'] = attr['enum'][0] if 'enum' in attr else None
+
+                endpoints[endpoint_name] = endpoint_data
+
+        return cls(name, packet_version, protocol_type, product_key, endpoints)
+
 
 class AquaforteDiscoveryClient:
     """AquaForte Discovery Client."""
@@ -158,7 +286,10 @@ class AquaforteApiClient:
         """Initialize the API client with device information."""
         self._ip_address = discovery_data.get('ip')
         self._device_id = discovery_data.get('device_id')
+        self._product_key = discovery_data.get('product_key')
+        self._mac = discovery_data.get('firmware_version')
         self._firmware_version = discovery_data.get('firmware_version')
+
 
         self._passcode = None
         self._reader = None
@@ -173,6 +304,8 @@ class AquaforteApiClient:
         self._allowed_missed_pings = 3
         self._expected_response_events = {}
 
+        self._data_map = None
+
         # Map of packet types to handler functions
         self._packet_handlers = {
             PacketType.PING_PONG_RESPONSE: self._handle_ping_response,
@@ -185,9 +318,27 @@ class AquaforteApiClient:
         }
         _LOGGER.debug(f"AquaforteApiClient initialized for device: {self._device_id}")
 
+    async def _setup_datamap(self):
+        """Set up the AquaForte device datamap."""
+        _LOGGER.info(f"Setting up AquaForte device with product key: {self._product_key}")
+
+        # Attempt to load device data
+        self._data_map = await DeviceDataMap.load_device_data(product_key=self._product_key)
+
+        # If loading the device data map fails, abort setup
+        if not self._data_map:
+            _LOGGER.error(f"Failed to load device data for product key: {self._product_key}. Aborting setup.")
+            raise Exception(f"Device setup failed: Unable to load device data for product key {self._product_key}")
+
+        _LOGGER.info(f"Device setup completed successfully for product key: {self._product_key}")
+
     async def async_connect_device(self) -> bool:
         """Attempt to connect to the device."""
         try:
+            # Step 1: Get the datamap if not loaded
+            if not self._data_map:
+                await self._setup_datamap()
+
             # Step 1: Connect
             await self._connect()
 

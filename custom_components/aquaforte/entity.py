@@ -26,7 +26,7 @@ class AquaforteEntity(Entity):
             "name": f"Aquaforte Pump",
             "manufacturer": "AquaForte",
             "model": "Water Pump",
-            "model_id": self._client._device_id,
+            "model_id": self._client._product_key,
             "sw_version": self._client._firmware_version,
         }
 
