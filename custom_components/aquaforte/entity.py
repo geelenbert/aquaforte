@@ -23,9 +23,10 @@ class AquaforteEntity(Entity):
         """Return device information for this entity to link it to the device."""
         return {
             "identifiers": {(DOMAIN, self._client._device_id)},
-            "name": f"Aquaforte {self._client._device_id}",
+            "name": f"Aquaforte Pump",
             "manufacturer": "AquaForte",
             "model": "Water Pump",
+            "model_id": self._client._device_id,
             "sw_version": self._client._firmware_version,
         }
 
