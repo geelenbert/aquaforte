@@ -349,6 +349,15 @@ class AquaforteApiClient:
         }
         _LOGGER.debug(f"AquaforteApiClient initialized for device: {self._device_id}")
 
+    async def async_initialize(self) -> None:
+        """Asynchronously initialize the client by loading the device data map."""
+        try:
+            await self._setup_datamap()  # Load device data asynchronously.
+            _LOGGER.info(f"Initialization complete for product key: {self._product_key}")
+        except Exception as e:
+            _LOGGER.error(f"Failed to initialize device with product key {self._product_key}: {e}")
+            raise
+
     async def _setup_datamap(self):
         """Set up the AquaForte device datamap."""
         _LOGGER.info(f"Setting up AquaForte device with product key: {self._product_key}")
@@ -361,14 +370,15 @@ class AquaforteApiClient:
             _LOGGER.error(f"Failed to load endpoint data for product key: {self._product_key}. Aborting setup.")
             raise Exception(f"Device setup failed: Unable to load endpoint data for product key {self._product_key}")
 
-        _LOGGER.info(f"Endpoint succesfully loaded for product key: {self._product_key}")
+        _LOGGER.info(f"Endpoint successfully loaded for product key: {self._product_key}")
+
 
     async def async_connect_device(self) -> bool:
         """Attempt to connect to the device."""
         try:
             # Step 1: Get the datamap if not loaded
-            if not self._device_data:
-                await self._setup_datamap()
+            # if not self._device_data:
+            #     await self._setup_datamap()
 
             # Step 2: Connect
             await self._connect()
@@ -663,15 +673,35 @@ class AquaforteApiClient:
         if PacketType.DATA_TRANSMIT_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_TRANSMIT_RESPONSE].set()
 
+        #Parse the incomming data
         endpoint_data = data[offset:]
-        changed_endpoints = self._device_data.parse(endpoint_data)
+        self._device_data.parse(endpoint_data)
+
 
 
     async def _handle_data_control_response(self, data: Optional[bytes]):
         """Handle data control response packets."""
+        offset = 0
+        # find the P0 command type
+        try:
+            p0_command, offset = read_int8(data, offset)
+            if p0_command == P0_STATUS_REPLY:
+                _LOGGER.debug(f"Received P0_STATUS_REPLY ({self._ip_address}).")
+            elif p0_command == P0_STATUS_REPORT:
+                _LOGGER.debug(f"Received P0_STATUS_REPORT ({self._ip_address}).")
+            else:
+                raise Exception
+        except Exception:
+            self.logger.debug(f"Error decoding p0 command: {p0_command}")
+            return
+
         _LOGGER.debug(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
+
+        #Parse the incomming data
+        endpoint_data = data[offset:]
+        self._device_data.parse(endpoint_data)
 
     async def _handle_data_control_request(self, data: Optional[bytes]):
         """Handle data control request packets."""
