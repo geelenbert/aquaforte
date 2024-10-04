@@ -55,12 +55,17 @@ class PacketType(Enum):
     DATA_CONTROL_REQUEST = 0x93
     DATA_CONTROL_RESPONSE = 0x94
 
+P0_CONTROL_DEVICE = 0x01
+P0_READ_STATUS = 0x02
+P0_STATUS_REPLY = 0x03
+P0_STATUS_REPORT = 0x04
+
 
 import os
 import requests
 import json
 
-class DeviceDataMap:
+class AquaforteDeviceEndPoints:
     """Class to represent the data structure and manage updates from the AquaForte device."""
 
     def __init__(self, name, packet_version, protocol_type, product_key, endpoints):
@@ -88,7 +93,7 @@ class DeviceDataMap:
         return max_offset
 
     @classmethod
-    async def load_device_data(cls, product_key):
+    async def load_config(cls, product_key):
         """Simplified device data loader: tries local first, then cloud."""
         if not product_key:
             _LOGGER.error("Product Key is empty. Cannot load device data.")
@@ -98,7 +103,7 @@ class DeviceDataMap:
         base_path = os.path.dirname(__file__)
 
         # Construct the file path for the local JSON in the 'models' directory relative to api.py
-        models_path = os.path.join(base_path, 'modelsAAA', f"{product_key}.json")
+        models_path = os.path.join(base_path, 'models', f"{product_key}.json")
 
         # Try to load from local file first
         if os.path.exists(models_path):
@@ -107,7 +112,7 @@ class DeviceDataMap:
                 async with aiofiles.open(models_path, 'r') as file:
                     data = await file.read()
                     json_data = json.loads(data)
-                return cls.load_format_from_dict(json_data)
+                return cls.parse_config_from_dict(json_data)
             except Exception as e:
                 _LOGGER.error(f"Error loading JSON from file: {e}")
                 return None
@@ -124,7 +129,7 @@ class DeviceDataMap:
                         if response.status == 200:
                             _LOGGER.info(f"Remote configuration fetched for product key: {product_key}")
                             remote_data = await response.json()
-                            return cls.load_format_from_dict(remote_data)
+                            return cls.parse_config_from_dict(remote_data)
                         else:
                             _LOGGER.error(f"Failed to fetch remote JSON. Status code: {response.status}")
                 except aiohttp.ClientError as e:
@@ -135,7 +140,7 @@ class DeviceDataMap:
         return None
 
     @classmethod
-    def load_format_from_dict(cls, data):
+    def parse_config_from_dict(cls, data):
         """Load device format from a dictionary."""
         _LOGGER.debug(f"Loading device data from dictionary for product key: {data.get('product_key')}")
         name = data['name']
@@ -175,6 +180,33 @@ class DeviceDataMap:
 
         return cls(name, packet_version, protocol_type, product_key, endpoints)
 
+    def parse(self, data):
+        if len(data) != self.endpoint_size:
+            raise ValueError("Data size doesn't match expected size")
+
+        changed_endpoints = []
+        for endpoint_name, endpoint_data in self.endpoints.items():
+            byte_offset = endpoint_data['byte_offset']
+            length = endpoint_data['length']
+            bit_offset = endpoint_data['bit_offset']
+            data_type = endpoint_data['data_type']
+            unit = endpoint_data['unit']
+
+            if data_type == 'bool':
+                value = bool((data[byte_offset] >> bit_offset) & 0x01)
+            elif data_type == 'uint8':
+                value = data[byte_offset]
+            elif data_type == 'enum':
+                enum_index = (data[byte_offset] >> bit_offset) & (2 ** length - 1)
+                value = endpoint_data['enum'][enum_index]
+            elif data_type == 'binary':
+                value = bytearray(data[byte_offset: byte_offset + length])
+
+            if value != endpoint_data['value']:
+                endpoint_data['value'] = value
+                changed_endpoints.append(endpoint_name)
+
+        return changed_endpoints
 
 class AquaforteDiscoveryClient:
     """AquaForte Discovery Client."""
@@ -290,7 +322,6 @@ class AquaforteApiClient:
         self._mac = discovery_data.get('firmware_version')
         self._firmware_version = discovery_data.get('firmware_version')
 
-
         self._passcode = None
         self._reader = None
         self._writer = None
@@ -304,7 +335,7 @@ class AquaforteApiClient:
         self._allowed_missed_pings = 3
         self._expected_response_events = {}
 
-        self._data_map = None
+        self._device_data = None
 
         # Map of packet types to handler functions
         self._packet_handlers = {
@@ -323,33 +354,36 @@ class AquaforteApiClient:
         _LOGGER.info(f"Setting up AquaForte device with product key: {self._product_key}")
 
         # Attempt to load device data
-        self._data_map = await DeviceDataMap.load_device_data(product_key=self._product_key)
+        self._device_data = await AquaforteDeviceEndPoints.load_config(product_key=self._product_key)
 
         # If loading the device data map fails, abort setup
-        if not self._data_map:
-            _LOGGER.error(f"Failed to load device data for product key: {self._product_key}. Aborting setup.")
-            raise Exception(f"Device setup failed: Unable to load device data for product key {self._product_key}")
+        if not self._device_data:
+            _LOGGER.error(f"Failed to load endpoint data for product key: {self._product_key}. Aborting setup.")
+            raise Exception(f"Device setup failed: Unable to load endpoint data for product key {self._product_key}")
 
-        _LOGGER.info(f"Device setup completed successfully for product key: {self._product_key}")
+        _LOGGER.info(f"Endpoint succesfully loaded for product key: {self._product_key}")
 
     async def async_connect_device(self) -> bool:
         """Attempt to connect to the device."""
         try:
             # Step 1: Get the datamap if not loaded
-            if not self._data_map:
+            if not self._device_data:
                 await self._setup_datamap()
 
-            # Step 1: Connect
+            # Step 2: Connect
             await self._connect()
 
-            # Step 2: Start the listener
+            # Step 3: Start the listener
             self._listener_task = asyncio.create_task(self._listen())
 
-            # Step 3: Authenticate (retrieve passcode and login)
+            # Step 4: Authenticate (retrieve passcode and login)
             await self._authenticate()
 
-            # Step 4: Start ping task if authentication successful
+            # Step 5: Start ping task if authentication successful
             self._ping_task = asyncio.create_task(self._ping_task_loop())
+
+            # Intial status request to get current state from device
+            await self.request_status()
 
             return True
         except (asyncio.TimeoutError, OSError, AquaforteApiClientAuthenticationError) as e:
@@ -530,16 +564,39 @@ class AquaforteApiClient:
             return False
         return True
 
-    def build_message(self, command: PacketType, data=None) -> bytes:
+    def build_message(self, command: PacketType, data=None, P0_Command=None) -> bytes:
         """Build a message to send to the device."""
+        # Packet prefix
         prefix = b'\x00\x00\x00\x03'
+
+        # Flag is always zero
         flag = b'\x00'
+
+        # Fortmat the command bytes
         command_bytes = struct.pack('>H', command.value)
+
+        # Make data an empty byte if not exisintg
         data = data or b''
+
+        # Add the bytes for the P0 command and data
+        if P0_Command == P0_READ_STATUS:
+            data = P0_READ_STATUS.to_bytes(1, byteorder='big') + data
+
+        # Check if we sending a control device packet, we need to include a packet counter
+        elif P0_Command == P0_CONTROL_DEVICE:
+            self.packet_counter += 1
+
+            # Create P0_CONTROL_DEVICE byte and 4-byte packet counter
+            data = self.packet_counter.to_bytes(4, byteorder='big') + P0_CONTROL_DEVICE.to_bytes(1, byteorder='big') + data
+
+        # Calculate the length of the rest of the message (flag + command + additional data)
         length = len(flag) + len(command_bytes) + len(data)
         length_bytes = struct.pack('>B', length)
 
-        return prefix + length_bytes + flag + command_bytes + data
+        # Construct the message
+        message = prefix + length_bytes + flag + command_bytes + data
+
+        return message
 
     # Authentication Steps
     async def get_passcode(self) -> bool:
@@ -568,6 +625,17 @@ class AquaforteApiClient:
         _LOGGER.info(f"Login successful for {self._ip_address}")
         return True
 
+    async def request_status(self) -> bool:
+        """Send the status update request to the device."""
+        _LOGGER.debug(f"Sending status request ({self._ip_address})...")
+        message = self.build_message(PacketType.DATA_TRANSMIT_REQUEST, P0_Command=P0_READ_STATUS)
+
+        if not await self.transmit_and_wait_for_response(message, PacketType.DATA_TRANSMIT_RESPONSE):
+            _LOGGER.error(f"Status Request failed ({self._ip_address}).")
+
+        _LOGGER.info(f"Status Request Succesful for {self._ip_address}")
+        return True
+
     # Handler functions for specific packet types
     async def _handle_ping_response(self, data: Optional[bytes]):
         """Handle ping response packets."""
@@ -577,20 +645,38 @@ class AquaforteApiClient:
 
     async def _handle_data_transmit_response(self, data: Optional[bytes]):
         """Handle data transmission response packets."""
+        offset = 0
+        # find the P0 command type
+        try:
+            p0_command, offset = read_int8(data, offset)
+            if p0_command == P0_STATUS_REPLY:
+                _LOGGER.debug(f"Received P0_STATUS_REPLY ({self._ip_address}).")
+            elif p0_command == P0_STATUS_REPORT:
+                _LOGGER.debug(f"Received P0_STATUS_REPORT ({self._ip_address}).")
+            else:
+                raise Exception
+        except Exception:
+            self.logger.debug(f"Error decoding p0 command: {p0_command}")
+            return
+
         _LOGGER.info(f"Data Transmit Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_TRANSMIT_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_TRANSMIT_RESPONSE].set()
 
+        endpoint_data = data[offset:]
+        changed_endpoints = self._device_data.parse(endpoint_data)
+
+
     async def _handle_data_control_response(self, data: Optional[bytes]):
         """Handle data control response packets."""
-        _LOGGER.info(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        _LOGGER.debug(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
 
     async def _handle_data_control_request(self, data: Optional[bytes]):
         """Handle data control request packets."""
         # This packet type is initiated from the device, wehn something has changed
-        _LOGGER.info(f"Data Control Request received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        _LOGGER.debug(f"Data Control Request received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
 
@@ -617,7 +703,7 @@ class AquaforteApiClient:
 
     async def _handle_passcode_response(self, data: Optional[bytes]):
         """Handle passcode response packets."""
-        _LOGGER.info(f"Passcode Response received ({self._ip_address}).")
+        _LOGGER.debug(f"Passcode Response received ({self._ip_address}).")
 
         try:
             # Ensure data is not None or empty
@@ -652,7 +738,7 @@ class AquaforteApiClient:
 
     async def _handle_wifi_info_response(self, data: Optional[bytes]):
         """Handle WiFi information response packets."""
-        _LOGGER.info(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+        _LOGGER.debug(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
 
 
 # Utility functions remain the same
