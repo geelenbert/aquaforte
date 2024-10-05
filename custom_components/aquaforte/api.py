@@ -205,8 +205,86 @@ class AquaforteDeviceEndPoints:
             if value != endpoint_data['value']:
                 endpoint_data['value'] = value
                 changed_endpoints.append(endpoint_name)
-
         return changed_endpoints
+
+
+class AquaForteHAEntityManager:
+    """Manage Home Assistant entity updates and control commands for AquaForte devices."""
+
+    def __init__(self, hass):
+        """Initialize the entity manager."""
+        self.hass = hass
+        self.entities = {}
+
+    def register_entity(self, entity_key, entity):
+        """Register an entity with its entity_key."""
+        self.entities[entity_key] = entity
+        _LOGGER.debug(f"Registered entity {entity_key}")
+
+    def update_entity(self, endpoint_name, value):
+        """Update a Home Assistant entity with new data from the device."""
+        if endpoint_name in self.entities:
+            entity = self.entities[endpoint_name]
+            entity.update_state(value)
+        else:
+            _LOGGER.warning(f"No Home Assistant entity found for endpoint {endpoint_name}")
+
+
+    def update_ha(self, changed_endpoints, device_data):
+        """Logic to translate Aquaforte endpoints to Home Assistant entities."""
+
+        # Handle switch endpoints
+        for switch_endpoint in ["SwitchON", "FeedSwitch"]:
+            if switch_endpoint in changed_endpoints:
+                value = device_data.endpoints[switch_endpoint]["value"]
+                self.update_entity(switch_endpoint, value)
+                _LOGGER.debug(f"Updated switch {switch_endpoint} to value: {value}")
+
+        # Handle change of timer mode and speeds
+        if "TimerON" in changed_endpoints or "AutoGears" in changed_endpoints or "Motor_Speed" in changed_endpoints:
+
+            # Set the Timer switch value
+            value = device_data.endpoints["TimerON"]["value"]
+            self.update_entity("TimerON", value)
+            _LOGGER.debug(f"Updated switch TimerON to value: {value}")
+
+            # Check which value needs to be mapped to speed
+            if device_data.endpoints["TimerON"]["value"]:
+                # Timer mode is active , set switch to true
+                self.update_entity("TimerON", True)
+                _LOGGER.debug(f"Updated switch TimerON to value: {value}")
+
+                # For speed use the Autogears value
+                speed = float(device_data.endpoints["AutoGears"]["value"])
+                self.update_entity("speed", speed)
+                _LOGGER.debug(f"Updated number entity 'speed' to AutoGears value: {speed}")
+            else:
+                # Timer mode is de avtivated , set switch to false
+                self.update_entity("TimerON", False)
+                _LOGGER.debug(f"Updated switch TimerON to value: {value}")
+
+                # For speed use the Autogears value
+                speed = float(device_data.endpoints["Motor_Speed"]["value"])
+                self.update_entity("speed", speed)
+                _LOGGER.debug(f"Updated number entity 'speed' to Motor_Speed value: {speed}")
+
+        # Handle binary sensors for fault status
+            fault_endpoints = {
+                "fault_overcurrent": "Fault Overcurrent",
+                "fault_overvoltage": "Fault Overvoltage",
+                "fault_high_temp": "High Temperature",
+                "fault_undervoltage": "Fault Undervoltage",
+                "fault_locked_rotor": "Fault Locked Rotor",
+                "fault_no_load": "No Load",
+                "fault_uart": "Serial Port Connection Fault"
+            }
+
+            for fault_endpoint, fault_name in fault_endpoints.items():
+                if fault_endpoint in changed_endpoints:
+                    value = device_data.endpoints[fault_endpoint]["value"]
+                    self.update_entity(fault_endpoint, value)
+                    _LOGGER.debug(f"Updated binary sensor {fault_name} to value: {value}")
+
 
 class AquaforteDiscoveryClient:
     """AquaForte Discovery Client."""
@@ -273,7 +351,7 @@ class AquaforteDiscoveryClient:
             _LOGGER.debug(f"Error parsing message from data: {message.hex()}")
             return
 
-        if message_type == PacketType.DISCOVERY_RESPONSE:  # DISCOVERY_RESPONSE
+        if message_type == PacketType.DISCOVERY_RESPONSE.value:  # DISCOVERY_RESPONSE
             _LOGGER.debug(f'DISCOVERY_RESPONSE from {remote}')
             self._handle_reply_broadcast(remote, message, offset)
         else:
@@ -314,7 +392,7 @@ class AquaforteDiscoveryClient:
 class AquaforteApiClient:
     """AquaForte API Client for communication with a specific device."""
 
-    def __init__(self, discovery_data: dict) -> None:
+    def __init__(self, discovery_data: dict, hass) -> None:
         """Initialize the API client with device information."""
         self._ip_address = discovery_data.get('ip')
         self._device_id = discovery_data.get('device_id')
@@ -336,6 +414,7 @@ class AquaforteApiClient:
         self._expected_response_events = {}
 
         self._device_data = None
+        self.entity_manager = AquaForteHAEntityManager(hass)  # Initialize the entity manager
 
         # Map of packet types to handler functions
         self._packet_handlers = {
@@ -360,7 +439,7 @@ class AquaforteApiClient:
 
     async def _setup_datamap(self):
         """Set up the AquaForte device datamap."""
-        _LOGGER.info(f"Setting up AquaForte device with product key: {self._product_key}")
+        _LOGGER.info(f"Setting up endpoint config with product key: {self._product_key}")
 
         # Attempt to load device data
         self._device_data = await AquaforteDeviceEndPoints.load_config(product_key=self._product_key)
@@ -370,16 +449,12 @@ class AquaforteApiClient:
             _LOGGER.error(f"Failed to load endpoint data for product key: {self._product_key}. Aborting setup.")
             raise Exception(f"Device setup failed: Unable to load endpoint data for product key {self._product_key}")
 
-        _LOGGER.info(f"Endpoint successfully loaded for product key: {self._product_key}")
+        _LOGGER.info(f"Endpoint config successfull.")
 
 
     async def async_connect_device(self) -> bool:
         """Attempt to connect to the device."""
         try:
-            # Step 1: Get the datamap if not loaded
-            # if not self._device_data:
-            #     await self._setup_datamap()
-
             # Step 2: Connect
             await self._connect()
 
@@ -393,7 +468,7 @@ class AquaforteApiClient:
             self._ping_task = asyncio.create_task(self._ping_task_loop())
 
             # Intial status request to get current state from device
-            await self.request_status()
+            # await self.request_status()
 
             return True
         except (asyncio.TimeoutError, OSError, AquaforteApiClientAuthenticationError) as e:
@@ -475,6 +550,10 @@ class AquaforteApiClient:
                 await asyncio.sleep(RECONNECT_DELAY)  # Sleep before attempting reconnection
                 if await self.async_connect_device():
                     _LOGGER.info(f"Successfully reconnected to device ({self._ip_address})")
+
+                    # Request status update:
+                    await self.request_status()
+
                     return  # Exit the loop once reconnected
             except Exception as e:
                 _LOGGER.error(f"Reconnection attempt failed for device ({self._ip_address}): {e}")
@@ -653,8 +732,13 @@ class AquaforteApiClient:
         if PacketType.PING_PONG_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.PING_PONG_RESPONSE].set()
 
+        if self._missed_ping_count:
+            _LOGGER.debug(f"Reset missed ping count ({self._ip_address}).")
+            self._missed_ping_count = 0
+
     async def _handle_data_transmit_response(self, data: Optional[bytes]):
         """Handle data transmission response packets."""
+        _LOGGER.debug(f"Data Transmit Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         offset = 0
         # find the P0 command type
         try:
@@ -669,18 +753,20 @@ class AquaforteApiClient:
             self.logger.debug(f"Error decoding p0 command: {p0_command}")
             return
 
-        _LOGGER.info(f"Data Transmit Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_TRANSMIT_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_TRANSMIT_RESPONSE].set()
 
-        #Parse the incomming data
+        # Parse the incomming data
         endpoint_data = data[offset:]
-        self._device_data.parse(endpoint_data)
+        changed_endpoints = self._device_data.parse(endpoint_data)
 
+        # Update HA
+        self.entity_manager.update_ha(changed_endpoints, self._device_data)
 
 
     async def _handle_data_control_response(self, data: Optional[bytes]):
         """Handle data control response packets."""
+        _LOGGER.debug(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         offset = 0
         # find the P0 command type
         try:
@@ -695,20 +781,52 @@ class AquaforteApiClient:
             self.logger.debug(f"Error decoding p0 command: {p0_command}")
             return
 
-        _LOGGER.debug(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
 
         #Parse the incomming data
         endpoint_data = data[offset:]
-        self._device_data.parse(endpoint_data)
+        changed_endpoints = self._device_data.parse(endpoint_data)
+
+        # Update HA
+        self.entity_manager.update_ha(changed_endpoints, self._device_data)
+
 
     async def _handle_data_control_request(self, data: Optional[bytes]):
         """Handle data control request packets."""
         # This packet type is initiated from the device, wehn something has changed
         _LOGGER.debug(f"Data Control Request received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+
+
+        offset = 0
+        try:
+            prefix, offset = read_uint32_be(data, offset)
+            if prefix != 0x00000000: # For some reason this is a different prefix
+                _LOGGER.debug(f"Ignore data package because invalid prefix ({self._ip_address}): {data.hex()}")
+                return
+
+            device_id_len, offset = read_int16_be(data, offset)
+            device_id, offset = read_string(data, offset, length=device_id_len)
+
+            # find the P0 command type
+            p0_command, offset = read_int8(data, offset)
+            if p0_command == P0_STATUS_REPORT:
+                _LOGGER.debug(f"Received P0_STATUS_REPORT ({self._ip_address}).")
+            else:
+                raise Exception
+        except Exception:
+            _LOGGER.debug(f"Error decoding p0 command: {p0_command}")
+            return
+
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
+
+        #Parse the incomming data
+        endpoint_data = data[offset:]
+        changed_endpoints = self._device_data.parse(endpoint_data)
+
+        # Update HA
+        self.entity_manager.update_ha(changed_endpoints, self._device_data)
 
     async def _handle_login_response(self, data: Optional[bytes]):
         """Handle the login response and check if login was successful."""
@@ -769,6 +887,17 @@ class AquaforteApiClient:
     async def _handle_wifi_info_response(self, data: Optional[bytes]):
         """Handle WiFi information response packets."""
         _LOGGER.debug(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
+
+    async def control_device(self, endpoint, state) -> bool:
+        """Send the control request to the device."""
+        _LOGGER.debug(f"Sending control request {state} to endpoint {endpoint} ({self._ip_address})...")
+        # message = self.build_message(PacketType.DATA_TRANSMIT_REQUEST, P0_Command=P0_CONTROL_DEVICE)
+
+        # if not await self.transmit_and_wait_for_response(message, PacketType.DATA_TRANSMIT_RESPONSE):
+        #     _LOGGER.error(f"Status Request failed ({self._ip_address}).")
+
+        _LOGGER.info(f"Control Request Succesful for {self._ip_address}")
+        return True
 
 
 # Utility functions remain the same

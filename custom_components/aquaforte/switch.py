@@ -11,12 +11,21 @@ async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Aquaforte switch entities from a config entry."""
     client = hass.data[DOMAIN][entry.entry_id]["client"]
 
-    async_add_entities(
-        [
-            AquaforteSwitch(client, entry, SwitchEntityDescription(key="power", name="Power", icon="mdi:power")),
-            AquaforteSwitch(client, entry, SwitchEntityDescription(key="pause", name="Pause", icon="mdi:pause")),
-        ]
-    )
+    # Create switch entities
+    switches = [
+            # Map the key of the switch to the same key as the endpoint on the aquaforte device
+            AquaforteSwitch(client, entry, SwitchEntityDescription(key="SwitchON", name="Power", icon="mdi:power")),
+            AquaforteSwitch(client, entry, SwitchEntityDescription(key="FeedSwitch", name="Pause", icon="mdi:pause")),
+            AquaforteSwitch(client, entry, SwitchEntityDescription(key="TimerON", name="Timer", icon="mdi:timer")),
+    ]
+
+    # Register the switches in Home Assistant
+    async_add_entities(switches)
+
+    # Register entities in the EntityManager using their keys
+    for switch in switches:
+        client.entity_manager.register_entity(switch._attr_key, switch)
+
 
 class AquaforteSwitch(AquaforteEntity, SwitchEntity):
     """Representation of an Aquaforte switch."""
@@ -28,6 +37,7 @@ class AquaforteSwitch(AquaforteEntity, SwitchEntity):
         # Apply EntityDescription properties
         self._attr_icon = description.icon
 
+        # Set default state
         self._is_on = False
 
     @property
@@ -37,12 +47,13 @@ class AquaforteSwitch(AquaforteEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
-        #await self._client.async_turn_on(self.entity_description.key)
-        self._is_on = True
-        self.async_write_ha_state()
+        await self._client.control_device(self._attr_key, "on")
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
-        #await self._client.async_turn_off(self.entity_description.key)
-        self._is_on = False
+        await self._client.control_device(self._attr_key, "off")
+
+    def update_state(self, state: bool):
+        """Update the switch state externally from the EntityManager."""
+        self._is_on = state
         self.async_write_ha_state()
