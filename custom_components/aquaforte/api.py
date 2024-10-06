@@ -92,6 +92,44 @@ class AquaforteDeviceEndPoints:
                     max_offset = end_offset
         return max_offset
 
+    @property
+    def writable_value_size(self):
+        max_offset = 0
+        for endpoint in self.endpoints.values():
+            # filter those with "type" set to "status_writable"
+            if endpoint.get('type') == 'status_writable':
+
+                if 'byte_offset' in endpoint and 'length' in endpoint and 'unit' in endpoint:
+                    if endpoint['unit'] == 'byte':
+                        end_offset = endpoint['byte_offset'] + endpoint['length']
+                    elif endpoint['unit'] == 'bit':
+                        end_offset = endpoint['byte_offset'] + 1
+                    else:
+                        raise ValueError(f"Endpoint unit type undefined: {endpoint['unit']} ")
+
+                    if end_offset > max_offset:
+                        max_offset = end_offset
+        return max_offset
+
+    @property
+    def writable_flag_size(self):
+        # Initialize a list to store endpoints that are "status_writable"
+        writable_endpoints = []
+
+        # Loop through all endpoints and filter those with "type" set to "status_writable"
+        for endpoint in self.endpoints.values():
+            if endpoint.get('type') == 'status_writable':
+                writable_endpoints.append(endpoint)
+
+        # Get the total number of writable endpoints
+        total_writable_endpoints = len(writable_endpoints)
+
+        # Calculate the number of bytes needed to hold bit flags for all writable endpoints
+        # Each byte holds 8 bits, so divide by 8 and round up to get the required number of bytes
+        num_bytes = (total_writable_endpoints + 7) // 8  # Adding 7 ensures proper rounding up
+
+        return num_bytes
+
     @classmethod
     async def load_config(cls, product_key):
         """Simplified device data loader: tries local first, then cloud."""
@@ -207,14 +245,61 @@ class AquaforteDeviceEndPoints:
                 changed_endpoints.append(endpoint_name)
         return changed_endpoints
 
+    def build_attr_vals(self, endpoint, value):
+        # Initialize a blank byte array of the correct size for all endpoints
+        data_array = bytearray(self.writable_value_size)
+
+        byte_offset = endpoint['byte_offset']
+        length = endpoint['length']
+        bit_offset = endpoint['bit_offset']
+        data_type = endpoint['data_type']
+        unit_type = endpoint['unit']
+
+        # Set the value in the data array based on the data type
+        if data_type == 'bool' and unit_type == 'bit':
+            if value in [1, True, 'True', 'true','On','on']:
+                data_array[byte_offset] |= (1 << bit_offset)
+            else:
+                data_array[byte_offset] &= ~(1 << bit_offset)
+        elif data_type == 'uint8' and unit_type == 'byte' and length == 1:
+            i_value = int(value)
+            if not (0 <= i_value < 256):
+                raise ValueError("Value out of range for uint8")
+            data_array[byte_offset] = i_value
+        elif data_type == 'enum' and unit_type == 'bit':
+            enum_index = endpoint['enum'].index(value)
+            data_array[byte_offset] |= (enum_index << bit_offset) & (2 ** length - 1)
+        elif data_type == 'binary' and data_type == 'byte':
+            if not isinstance(value, (bytes, bytearray)) or len(value) != length:
+                raise ValueError(f"Binary value must be {length} bytes long")
+            data_array[byte_offset:byte_offset + length] = value
+        else:
+            raise ValueError(f"Unsupported data type for endpoint {endpoint['display_name']}: {data_type}")
+
+        return data_array
+
+    def build_attr_flags(self, endpoint, value):
+        # Get the total number of bytes for the flag size
+        flag_size = self.writable_flag_size
+
+        # Start with the number 1 and shift it left by the number of bits specified by bit_number
+        bit_number = endpoint['id']
+        shifted_value = 1 << bit_number
+
+        # Convert the shifted value to a byte array (little-endian) with the size of flag_size
+        data_array = shifted_value.to_bytes(flag_size, byteorder='big')
+
+        return data_array
+
 
 class AquaForteHAEntityManager:
     """Manage Home Assistant entity updates and control commands for AquaForte devices."""
 
-    def __init__(self, hass):
+    def __init__(self, hass, client):
         """Initialize the entity manager."""
         self.hass = hass
         self.entities = {}
+        self._client = client
 
     def register_entity(self, entity_key, entity):
         """Register an entity with its entity_key."""
@@ -228,6 +313,15 @@ class AquaForteHAEntityManager:
             entity.update_state(value)
         else:
             _LOGGER.warning(f"No Home Assistant entity found for endpoint {endpoint_name}")
+
+    async def control_device(self, endpoint_key, state_or_value):
+        """Send control commands to the AquaForte device based on entity actions."""
+        _LOGGER.debug(f"Sending control command for {endpoint_key} with value {state_or_value}")
+        try:
+            # Call the client method to send the control command
+            await self._client.send_control_request(endpoint_key, state_or_value)
+        except Exception as e:
+            _LOGGER.error(f"Failed to send control command for {endpoint_key}: {e}")
 
 
     def update_ha(self, changed_endpoints, device_data):
@@ -400,6 +494,8 @@ class AquaforteApiClient:
         self._mac = discovery_data.get('firmware_version')
         self._firmware_version = discovery_data.get('firmware_version')
 
+        self.packet_counter = 0
+
         self._passcode = None
         self._reader = None
         self._writer = None
@@ -414,7 +510,8 @@ class AquaforteApiClient:
         self._expected_response_events = {}
 
         self._device_data = None
-        self.entity_manager = AquaForteHAEntityManager(hass)  # Initialize the entity manager
+        self.entity_manager = AquaForteHAEntityManager(hass, self)  # Initialize the entity manager
+
 
         # Map of packet types to handler functions
         self._packet_handlers = {
@@ -680,7 +777,16 @@ class AquaforteApiClient:
 
         # Calculate the length of the rest of the message (flag + command + additional data)
         length = len(flag) + len(command_bytes) + len(data)
-        length_bytes = struct.pack('>B', length)
+        length_bytes = []
+        while True:
+            byte = length & 0x7F
+            length >>= 7
+            if length:
+                length_bytes.append(byte | 0x80)
+            else:
+                length_bytes.append(byte)
+                break
+        length_bytes = bytes(length_bytes)
 
         # Construct the message
         message = prefix + length_bytes + flag + command_bytes + data
@@ -750,7 +856,7 @@ class AquaforteApiClient:
             else:
                 raise Exception
         except Exception:
-            self.logger.debug(f"Error decoding p0 command: {p0_command}")
+            _LOGGER.debug(f"Error decoding p0 command")
             return
 
         if PacketType.DATA_TRANSMIT_RESPONSE in self._expected_response_events:
@@ -768,17 +874,25 @@ class AquaforteApiClient:
         """Handle data control response packets."""
         _LOGGER.debug(f"Data Control Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
         offset = 0
-        # find the P0 command type
+
+        # Read the first 4 bytes as the packet counter
+        try:
+            packet_counter, offset = read_uint32_be(data, offset)
+            _LOGGER.debug(f"Packet counter received: {packet_counter}")
+        except Exception:
+            _LOGGER.error(f"Error reading packet counter")
+            return
+
+        # Read the next byte as the P0 command type
         try:
             p0_command, offset = read_int8(data, offset)
-            if p0_command == P0_STATUS_REPLY:
-                _LOGGER.debug(f"Received P0_STATUS_REPLY ({self._ip_address}).")
-            elif p0_command == P0_STATUS_REPORT:
-                _LOGGER.debug(f"Received P0_STATUS_REPORT ({self._ip_address}).")
+            if p0_command == P0_CONTROL_DEVICE:
+                _LOGGER.debug(f"Received P0_CONTROL_DEVICE ({self._ip_address}).")
             else:
-                raise Exception
+                _LOGGER.error(f"Unexpected P0 command: {p0_command}")
+                return
         except Exception:
-            self.logger.debug(f"Error decoding p0 command: {p0_command}")
+            _LOGGER.error(f"Error decoding P0 command")
             return
 
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
@@ -807,6 +921,8 @@ class AquaforteApiClient:
 
             device_id_len, offset = read_int16_be(data, offset)
             device_id, offset = read_string(data, offset, length=device_id_len)
+
+            #todo: check if this is our device id
 
             # find the P0 command type
             p0_command, offset = read_int8(data, offset)
@@ -888,13 +1004,27 @@ class AquaforteApiClient:
         """Handle WiFi information response packets."""
         _LOGGER.debug(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
 
-    async def control_device(self, endpoint, state) -> bool:
+    async def send_control_request(self, endpoint_name, value) -> bool:
         """Send the control request to the device."""
-        _LOGGER.debug(f"Sending control request {state} to endpoint {endpoint} ({self._ip_address})...")
-        # message = self.build_message(PacketType.DATA_TRANSMIT_REQUEST, P0_Command=P0_CONTROL_DEVICE)
+        # todo: Pass any value directly except the speed setting
 
-        # if not await self.transmit_and_wait_for_response(message, PacketType.DATA_TRANSMIT_RESPONSE):
-        #     _LOGGER.error(f"Status Request failed ({self._ip_address}).")
+        # Convert the payload to the appropriate value type
+        endpoint = self._device_data.endpoints.get(endpoint_name)
+        if not endpoint:
+            _LOGGER.error(f"Unknown endpoint: {endpoint_name}")
+            return
+
+        # Build the control data for the endpoint
+        attrFlags_t = self._device_data.build_attr_flags(endpoint, value)
+        attrVals_t = self._device_data.build_attr_vals(endpoint, value)
+
+        control_data = attrFlags_t + attrVals_t
+
+        _LOGGER.debug(f"Sending control request {value} to endpoint {endpoint_name} ({self._ip_address})...")
+        message = self.build_message(PacketType.DATA_CONTROL_REQUEST, P0_Command=P0_CONTROL_DEVICE, data=control_data)
+
+        if not await self.transmit_and_wait_for_response(message, PacketType.DATA_CONTROL_RESPONSE):
+            _LOGGER.error(f"Status Request failed ({self._ip_address}).")
 
         _LOGGER.info(f"Control Request Succesful for {self._ip_address}")
         return True

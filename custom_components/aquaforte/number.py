@@ -49,20 +49,12 @@ class AquaforteNumber(AquaforteEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the value via Home Assistant."""
-        if value < self._attr_native_min_value or value > self._attr_native_max_value:
-            _LOGGER.warning(f"Value {value} is out of bounds for {self._attr_key} (min: {self._attr_native_min_value}, max: {self._attr_native_max_value})")
-            return
-
         _LOGGER.debug(f"Sending control request for {self._attr_key} to set value {value}")
-        await self._client.control_device(self._attr_key, int(value))  # Send control command to device
+        self._client.entity_manager.control_device(self._attr_key, int(value))  # Send control command to device
         # No immediate update to _attr_native_value; we wait for the device to report back
 
     def update_state(self, value: float):
         """Update the number state when the device reports back."""
-        if value < self._attr_native_min_value or value > self._attr_native_max_value:
-            _LOGGER.warning(f"Value {value} is out of bounds for {self._attr_key} (min: {self._attr_native_min_value}, max: {self._attr_native_max_value})")
-            return
-
         _LOGGER.debug(f"Updating {self._attr_key} state to {value} from device")
         self._attr_native_value = float(value)  # Ensure it's a float
         self.async_write_ha_state()  # Now update the Home Assistant state

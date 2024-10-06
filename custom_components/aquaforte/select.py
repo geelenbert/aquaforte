@@ -28,7 +28,7 @@ class AquaforteSelect(AquaforteEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
-        await self._client.control_device(self._attr_key, option)
+        await self._client.entity_manager.control_device(self._attr_key, option)
 
 
     def update_state(self, option: str):

@@ -47,11 +47,11 @@ class AquaforteSwitch(AquaforteEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
-        await self._client.control_device(self._attr_key, "on")
+        await self._client.entity_manager.control_device(self._attr_key, "on")
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
-        await self._client.control_device(self._attr_key, "off")
+        await self._client.entity_manager.control_device(self._attr_key, "off")
 
     def update_state(self, state: bool):
         """Update the switch state externally from the EntityManager."""
