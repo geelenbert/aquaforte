@@ -317,11 +317,25 @@ class AquaForteHAEntityManager:
     async def control_device(self, endpoint_key, state_or_value):
         """Send control commands to the AquaForte device based on entity actions."""
         _LOGGER.debug(f"Sending control command for {endpoint_key} with value {state_or_value}")
+
         try:
-            # Call the client method to send the control command
-            await self._client.send_control_request(endpoint_key, state_or_value)
+            # If the endpoint we want to control is "speed", map it to Motor_Speed and TimerON
+            if endpoint_key == "speed":
+                # When controlling the speed, always set Motor_Speed and switch off TimerON mode
+                control_data = {
+                    "Motor_Speed": state_or_value,  # Set the speed value to Motor_Speed
+                    "TimerON": False                # Ensure TimerON is set to False (non-timer mode)
+                }
+            else:
+                # For other endpoints, just control the provided endpoint key
+                control_data = {endpoint_key: state_or_value}
+
+            # Call the client method to send the control request for multiple endpoints
+            await self._client.send_control_request(control_data)
+
         except Exception as e:
             _LOGGER.error(f"Failed to send control command for {endpoint_key}: {e}")
+
 
 
     def update_ha(self, changed_endpoints, device_data):
@@ -883,28 +897,10 @@ class AquaforteApiClient:
             _LOGGER.error(f"Error reading packet counter")
             return
 
-        # Read the next byte as the P0 command type
-        try:
-            p0_command, offset = read_int8(data, offset)
-            if p0_command == P0_CONTROL_DEVICE:
-                _LOGGER.debug(f"Received P0_CONTROL_DEVICE ({self._ip_address}).")
-            else:
-                _LOGGER.error(f"Unexpected P0 command: {p0_command}")
-                return
-        except Exception:
-            _LOGGER.error(f"Error decoding P0 command")
-            return
+        # Todo: check if the packet counter is the packet we where waiting for
 
         if PacketType.DATA_CONTROL_RESPONSE in self._expected_response_events:
             self._expected_response_events[PacketType.DATA_CONTROL_RESPONSE].set()
-
-        #Parse the incomming data
-        endpoint_data = data[offset:]
-        changed_endpoints = self._device_data.parse(endpoint_data)
-
-        # Update HA
-        self.entity_manager.update_ha(changed_endpoints, self._device_data)
-
 
     async def _handle_data_control_request(self, data: Optional[bytes]):
         """Handle data control request packets."""
@@ -1004,30 +1000,52 @@ class AquaforteApiClient:
         """Handle WiFi information response packets."""
         _LOGGER.debug(f"WiFi Info Response received ({self._ip_address}): {data.hex() if data else f'No data ({self._ip_address})'}")
 
-    async def send_control_request(self, endpoint_name, value) -> bool:
-        """Send the control request to the device."""
-        # todo: Pass any value directly except the speed setting
+    async def send_control_request(self, endpoint_values: dict) -> bool:
+        """Send the control request for multiple endpoints to the device.
 
-        # Convert the payload to the appropriate value type
-        endpoint = self._device_data.endpoints.get(endpoint_name)
-        if not endpoint:
-            _LOGGER.error(f"Unknown endpoint: {endpoint_name}")
-            return
+        Args:
+            endpoint_values (dict): Dictionary with endpoint names as keys and their corresponding values.
 
-        # Build the control data for the endpoint
-        attrFlags_t = self._device_data.build_attr_flags(endpoint, value)
-        attrVals_t = self._device_data.build_attr_vals(endpoint, value)
+        Returns:
+            bool: True if the control request was successful, False otherwise.
+        """
+        if not isinstance(endpoint_values, dict):
+            _LOGGER.error("Expected a dictionary of endpoint names and values")
+            return False
 
-        control_data = attrFlags_t + attrVals_t
+        attr_flags = bytearray(self._device_data.writable_flag_size)
+        attr_vals = bytearray(self._device_data.writable_value_size)
 
-        _LOGGER.debug(f"Sending control request {value} to endpoint {endpoint_name} ({self._ip_address})...")
+        for endpoint_name, value in endpoint_values.items():
+            endpoint = self._device_data.endpoints.get(endpoint_name)
+            if not endpoint:
+                _LOGGER.error(f"Unknown endpoint: {endpoint_name}")
+                continue
+
+            # Build control data for each endpoint
+            flag_data = self._device_data.build_attr_flags(endpoint, value)
+            val_data = self._device_data.build_attr_vals(endpoint, value)
+
+            # Merge the control data into the main byte arrays
+            for i in range(len(flag_data)):
+                attr_flags[i] |= flag_data[i]
+
+            for i in range(len(val_data)):
+                attr_vals[i] |= val_data[i]
+
+        # Combine the flags and values into the final control data
+        control_data = attr_flags + attr_vals
+
+        _LOGGER.debug(f"Sending control request for multiple endpoints: {endpoint_values} ({self._ip_address})...")
         message = self.build_message(PacketType.DATA_CONTROL_REQUEST, P0_Command=P0_CONTROL_DEVICE, data=control_data)
 
         if not await self.transmit_and_wait_for_response(message, PacketType.DATA_CONTROL_RESPONSE):
-            _LOGGER.error(f"Status Request failed ({self._ip_address}).")
+            _LOGGER.error(f"Control request failed for {self._ip_address}")
+            return False
 
-        _LOGGER.info(f"Control Request Succesful for {self._ip_address}")
+        _LOGGER.info(f"Control request successful for {self._ip_address}")
         return True
+
 
 
 # Utility functions remain the same

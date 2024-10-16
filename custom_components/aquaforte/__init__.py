@@ -8,7 +8,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import AquaforteApiClient
 from .const import DOMAIN, LOGGER
 
-PLATFORMS = ["binary_sensor", "number", "select", "switch"]
+PLATFORMS = ["binary_sensor", "number", "switch"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

@@ -16,7 +16,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # Create number entities
     numbers = [
         AquaforteNumber(client, entry, NumberEntityDescription(
-            key="speed", name="Motor Speed", native_min_value=30, native_max_value=100, native_step=1, native_unit_of_measurement="%", icon="mdi:engine")),
+            key="speed", name="Motor Speed", native_min_value=30, native_max_value=100, native_step=1, native_unit_of_measurement="%", icon="mdi:gauge")),
     ]
 
     # Register the number entities in Home Assistant
@@ -50,7 +50,7 @@ class AquaforteNumber(AquaforteEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the value via Home Assistant."""
         _LOGGER.debug(f"Sending control request for {self._attr_key} to set value {value}")
-        self._client.entity_manager.control_device(self._attr_key, int(value))  # Send control command to device
+        await self._client.entity_manager.control_device(self._attr_key, int(value))  # Send control command to device
         # No immediate update to _attr_native_value; we wait for the device to report back
 
     def update_state(self, value: float):
