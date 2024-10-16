@@ -16,6 +16,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     LOGGER.debug("Aquaforte: async_setup called")
     return True
 
+<<<<<<< HEAD
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
@@ -33,20 +34,20 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     return True
 
 
+=======
+>>>>>>> eea7c5d (Support for Multiple Devices)
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Set up AquaForte integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    client = AquaforteApiClient(discovery_data = config_entry.data, hass=hass)
+    # Create a new client instance for each config entry
+    client = AquaforteApiClient(discovery_data=config_entry.data, hass=hass)
     await client.async_initialize()
     await client.async_connect_device()
 
-    # Store client for this entry
-    hass.data[DOMAIN][config_entry.entry_id] = {
-        "client": client,
-    }
+    # Store the client in hass.data using entry ID
+    hass.data[DOMAIN][config_entry.entry_id] = {"client": client}
 
-    # Forward setup to the platforms
+    # Forward setup to platforms
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
 
     # Do an initial status request
