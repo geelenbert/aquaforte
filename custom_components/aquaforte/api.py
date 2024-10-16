@@ -130,29 +130,6 @@ class AquaforteDeviceEndPoints:
 
         return num_bytes
 
-    # @classmethod
-    # async def load_config(cls, product_key, hass) -> Optional[AquaforteDeviceEndPoints]:
-    #     """Load configuration either from local file or from the cloud."""
-    #     base_path = os.path.dirname(__file__)
-    #     models_path = os.path.join(base_path, 'models', f"{product_key}.json")
-
-    #     if os.path.exists(models_path):
-    #         _LOGGER.info(f"Loading device data from local file: {models_path}")
-    #         ...
-    #     else:
-    #         _LOGGER.warning(f"Local file not found. Trying to fetch from cloud.")
-    #         remote_url = f"{AQUAFORTE_MODELS_API_URL}?product_key={product_key}"
-    #         try:
-    #             async with aiohttp.ClientSession() as session:
-    #                 async with session.get(remote_url) as response:
-    #                     if response.status == 200:
-    #                         ...
-    #                     else:
-    #                         await create_notification(hass, "AquaForte Configuration Error", f"Failed to fetch configuration from cloud for product key: {product_key}. Please add the model manually.")
-    #         except aiohttp.ClientError as e:
-    #             await create_notification(hass, "AquaForte Network Error", f"Error fetching model configuration for product key: {product_key}.")
-
-
     @classmethod
     async def load_config(cls, product_key, hass) -> Optional[AquaforteDeviceEndPoints]:
         """Simplified device data loader: tries local first, then cloud."""
@@ -443,10 +420,12 @@ class AquaforteDiscoveryClient:
         DISCOVERY_MESSAGE = b'\x00\x00\x00\x03\x03\x00\x00\x03'
         try:
             if target_ip:
+                # Direct transmission to the specified IP address
                 _LOGGER.debug(f"Sending direct discovery message to {target_ip} on port {AQUAFORTE_UDP_PORT}")
                 sock.bind(("", AQUAFORTE_UDP_PORT))  # Bind to the same source port
                 sock.sendto(DISCOVERY_MESSAGE, (target_ip, AQUAFORTE_UDP_PORT))
             else:
+                # Broadcast discovery as previous
                 _LOGGER.debug(f"Sending broadcast discovery message to port {AQUAFORTE_UDP_PORT}")
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 sock.sendto(DISCOVERY_MESSAGE, ('<broadcast>', AQUAFORTE_UDP_PORT))
@@ -1070,9 +1049,7 @@ class AquaforteApiClient:
         _LOGGER.info(f"Control request successful for {self._ip_address}")
         return True
 
-
-
-# Utility functions remain the same
+# Utility functions
 def read_uint32_be(data: bytes, offset: int) -> tuple[int, int]:
     return struct.unpack_from('>I', data, offset)[0], offset + 4
 
