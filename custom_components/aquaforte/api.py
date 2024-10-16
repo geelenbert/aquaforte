@@ -130,8 +130,31 @@ class AquaforteDeviceEndPoints:
 
         return num_bytes
 
+    # @classmethod
+    # async def load_config(cls, product_key, hass) -> Optional[AquaforteDeviceEndPoints]:
+    #     """Load configuration either from local file or from the cloud."""
+    #     base_path = os.path.dirname(__file__)
+    #     models_path = os.path.join(base_path, 'models', f"{product_key}.json")
+
+    #     if os.path.exists(models_path):
+    #         _LOGGER.info(f"Loading device data from local file: {models_path}")
+    #         ...
+    #     else:
+    #         _LOGGER.warning(f"Local file not found. Trying to fetch from cloud.")
+    #         remote_url = f"{AQUAFORTE_MODELS_API_URL}?product_key={product_key}"
+    #         try:
+    #             async with aiohttp.ClientSession() as session:
+    #                 async with session.get(remote_url) as response:
+    #                     if response.status == 200:
+    #                         ...
+    #                     else:
+    #                         await create_notification(hass, "AquaForte Configuration Error", f"Failed to fetch configuration from cloud for product key: {product_key}. Please add the model manually.")
+    #         except aiohttp.ClientError as e:
+    #             await create_notification(hass, "AquaForte Network Error", f"Error fetching model configuration for product key: {product_key}.")
+
+
     @classmethod
-    async def load_config(cls, product_key):
+    async def load_config(cls, product_key, hass) -> Optional[AquaforteDeviceEndPoints]:
         """Simplified device data loader: tries local first, then cloud."""
         if not product_key:
             _LOGGER.error("Product Key is empty. Cannot load device data.")
@@ -145,7 +168,7 @@ class AquaforteDeviceEndPoints:
 
         # Try to load from local file first
         if os.path.exists(models_path):
-            _LOGGER.info(f"Loading device data from local file: {models_path}")
+            _LOGGER.debug(f"Loading device data from local file: {models_path}")
             try:
                 async with aiofiles.open(models_path, 'r') as file:
                     data = await file.read()
@@ -156,20 +179,24 @@ class AquaforteDeviceEndPoints:
                 return None
         else:
             # If local file not found, attempt to fetch from the cloud
-            _LOGGER.warning(f"Local file not found: {models_path}. Trying to fetch from cloud.")
+            _LOGGER.warning(f"Local file not found. Trying to fetch from cloud.")
             remote_url = f"{AQUAFORTE_MODELS_API_URL}?product_key={product_key}"
-            _LOGGER.warning(f"Fetching remote configuration for {product_key} from: {remote_url}")
+            _LOGGER.debug(f"Fetching remote configuration for {product_key} from: {remote_url}")
 
             # Use aiohttp for asynchronous non-blocking requests
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
                 try:
                     async with session.get(remote_url) as response:
                         if response.status == 200:
-                            _LOGGER.info(f"Remote configuration fetched for product key: {product_key}")
+                            _LOGGER.debug(f"Remote configuration fetched for product key: {product_key}")
                             remote_data = await response.json()
+
+                            await create_notification(hass, "AquaForte", f"Fetch configuration from cloud for product key:\n {product_key}.\n\n Please inform the maintainer to add the model.")
                             return cls.parse_config_from_dict(remote_data)
                         else:
                             _LOGGER.error(f"Failed to fetch remote JSON. Status code: {response.status}")
+                            await create_notification(hass, "AquaForte Configuration Error", f"Failed to fetch configuration from cloud for product key: {product_key}.\n Device not supported.")
+
                 except aiohttp.ClientError as e:
                     _LOGGER.error(f"Error fetching remote JSON: {e}")
                 except asyncio.TimeoutError:
@@ -550,7 +577,7 @@ class AquaforteApiClient:
         _LOGGER.info(f"Setting up endpoint config with product key: {self._product_key}")
 
         # Attempt to load device data
-        self._device_data = await AquaforteDeviceEndPoints.load_config(product_key=self._product_key)
+        self._device_data = await AquaforteDeviceEndPoints.load_config(product_key=self._product_key, hass=self.hass)
 
         # If loading the device data map fails, abort setup
         if not self._device_data:
@@ -1080,3 +1107,11 @@ def read_int8(data: bytes, offset: int) -> tuple[int, int]:
 
 def read_int16_be(data: bytes, offset: int) -> tuple[int, int]:
     return struct.unpack_from('>h', data, offset)[0], offset + 2
+
+async def create_notification(hass, title, message):
+    """Helper function to create persistent notifications."""
+    await hass.services.async_call('persistent_notification', 'create', {
+        'message': message,
+        'title': title,
+        'notification_id': f'aquaforte_{title}'
+    })
