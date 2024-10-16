@@ -1,9 +1,8 @@
 """Aquaforte Entity Definitions."""
 
-from homeassistant.helpers.entity import Entity, EntityDescription
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.helpers.device_registry import DeviceInfo
-from .api import AquaforteApiClient
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers import device_registry as dr
+
 from .const import DOMAIN
 
 
@@ -28,6 +27,8 @@ class AquaforteEntity(Entity):
             "model": "Water Pump",
             "model_id": self._client._product_key,
             "sw_version": self._client._firmware_version,
+            "connections": {(dr.CONNECTION_NETWORK_MAC, self._client._mac)},
+            "serial_number": self._client._device_id
         }
 
     @property
