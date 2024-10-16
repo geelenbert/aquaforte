@@ -412,31 +412,44 @@ class AquaforteDiscoveryClient:
         self._discovered_devices.clear()
         _LOGGER.debug("Starting device discovery...")
 
+        # Create an asyncio loop
+        loop = asyncio.get_running_loop()
+
         # Set up UDP socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setblocking(False)  # Set to non-blocking mode
         sock.settimeout(DISCOVERY_TIMEOUT)
 
         # Send discovery message
         DISCOVERY_MESSAGE = b'\x00\x00\x00\x03\x03\x00\x00\x03'
+
         try:
             if target_ip:
-                # Direct transmission to the specified IP address
                 _LOGGER.debug(f"Sending direct discovery message to {target_ip} on port {AQUAFORTE_UDP_PORT}")
                 sock.bind(("", AQUAFORTE_UDP_PORT))  # Bind to the same source port
-                sock.sendto(DISCOVERY_MESSAGE, (target_ip, AQUAFORTE_UDP_PORT))
+                await loop.run_in_executor(None, sock.sendto, DISCOVERY_MESSAGE, (target_ip, AQUAFORTE_UDP_PORT))
+
+                # Listen for a single response
+                try:
+                    data, addr = await loop.run_in_executor(None, sock.recvfrom, 1024)
+                    _LOGGER.debug(f"Received data from {addr}: {data.hex()}")
+                    self._parse_response(data, addr)
+                except socket.timeout:
+                    _LOGGER.debug(f"Discovery timeout reached for IP: {target_ip}. No devices found.")
             else:
-                # Broadcast discovery as previous
                 _LOGGER.debug(f"Sending broadcast discovery message to port {AQUAFORTE_UDP_PORT}")
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                sock.sendto(DISCOVERY_MESSAGE, ('<broadcast>', AQUAFORTE_UDP_PORT))
+                await loop.run_in_executor(None, sock.sendto, DISCOVERY_MESSAGE , ('<broadcast>', AQUAFORTE_UDP_PORT))
 
-            # Listen for responses
-            while True:
-                data, addr = sock.recvfrom(1024)
-                _LOGGER.debug(f"Received data from {addr}: {data.hex()}")
-                self._parse_response(data, addr)
-        except socket.timeout:
-            _LOGGER.debug("Discovery timeout reached. No more devices found.")
+                # Listen for responses asynchronously
+                while True:
+                    try:
+                        data, addr = await loop.run_in_executor(None, sock.recvfrom, 1024)
+                        _LOGGER.debug(f"Received data from {addr}: {data.hex()}")
+                        self._parse_response(data, addr)
+                    except socket.timeout:
+                        _LOGGER.debug("Discovery timeout reached. No more devices found.")
+                        break  # Exit the loop if timeout occurs
         except Exception as e:
             _LOGGER.error(f"Error during discovery: {e}")
         finally:
@@ -444,6 +457,7 @@ class AquaforteDiscoveryClient:
             _LOGGER.debug("UDP socket closed after discovery")
 
         return self._discovered_devices
+
 
     def _parse_response(self, message: bytes, remote: tuple) -> None:
         """Parse the discovery response message."""
