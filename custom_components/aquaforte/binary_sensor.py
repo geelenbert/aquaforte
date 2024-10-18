@@ -5,11 +5,12 @@ from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySen
 from .const import DOMAIN
 from .entity import AquaforteEntity
 
-
+import logging
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Aquaforte binary sensor entities from a config entry."""
-    client = hass.data[DOMAIN][entry.entry_id]["client"]
+    client = hass.data[DOMAIN][entry.entry_id]
 
     # Create switch entities
     binairy_sensors = [

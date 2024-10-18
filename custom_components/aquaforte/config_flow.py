@@ -5,11 +5,12 @@ from __future__ import annotations
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AquaforteDiscoveryClient
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN
 
+import logging
+_LOGGER = logging.getLogger(__name__)
 
 class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Aquaforte."""
@@ -97,8 +98,7 @@ class AquaforteFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def _discover_devices(self, ip_address=None):
         """Perform the device discovery."""
         LOGGER.debug("Starting discovery")
-        session = async_get_clientsession(self.hass)
-        client = AquaforteDiscoveryClient(session)
+        client = AquaforteDiscoveryClient()
 
         devices = await client.async_discover_devices(target_ip=ip_address)
 

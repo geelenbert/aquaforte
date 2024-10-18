@@ -6,10 +6,12 @@ from homeassistant.helpers.entity import DeviceInfo
 from .const import DOMAIN
 from .entity import AquaforteEntity
 
+import logging
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Aquaforte switch entities from a config entry."""
-    client = hass.data[DOMAIN][entry.entry_id]["client"]
+    client = hass.data[DOMAIN][entry.entry_id]
 
     # Create switch entities
     switches = [
